@@ -1,374 +1,244 @@
+# plex_dupefinder — Safe Plex Duplicate Manager
+
 <img src="assets/logo.svg" width="600" alt="Plex DupeFinder">
 
-[![made-with-python](https://img.shields.io/badge/Made%20with-Python-blue.svg?style=flat-square)](https://www.python.org/)
-[![License: GPL v3](https://img.shields.io/badge/License-GPL%203-blue.svg?style=flat-square)](https://github.com/l3uddz/plex_dupefinder/blob/master/LICENSE.md)
-[![last commit (develop)](https://img.shields.io/github/last-commit/l3uddz/plex_dupefinder/develop.svg?colorB=177DC1&label=Last%20Commit&style=flat-square)](https://github.com/l3uddz/plex_dupefinder/commits/develop)
-[![Discord](https://img.shields.io/discord/381077432285003776.svg?colorB=177DC1&label=Discord&style=flat-square)](https://discord.io/cloudbox)
-[![Contributing](https://img.shields.io/badge/Contributing-gray.svg?style=flat-square)](CONTRIBUTING.md)
-[![Donate](https://img.shields.io/badge/Donate-gray.svg?style=flat-square)](#donate)
+A safety-first, quarantine-by-default duplicate manager for Plex Media Server.
 
 ---
 
-<!-- TOC depthFrom:1 depthTo:2 withLinks:1 updateOnSave:1 orderedList:0 -->
+## Overview
 
-- [Introduction](#introduction)
-- [Demo](#demo)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Configuration](#configuration)
-  - [Sample](#sample)
-  - [Foreword](#foreword)
-  - [Details](#details)
-- [Plex](#plex)
-- [Usage](#usage)
-- [Donate](#donate)
+Plex libraries accumulate duplicate media entries over time — re-imports after drive migrations, Radarr upgrades, Tdarr transcodes landing alongside originals, or metadata mismatches that trick Plex into treating the same file as two separate items. Left unmanaged, these duplicates waste storage and clutter your library. plex_dupefinder automates the cleanup.
 
-<!-- /TOC -->
+The core philosophy is **conservative by design**: a false negative (leaving a duplicate in place) is always preferable to a false positive (destroying the only good copy). Every decision goes through a scoring engine that favors codec efficiency and encode quality over raw file size, a two-pass pipeline that re-validates state before acting, and a quarantine layer that moves files rather than deleting them — so every removal is fully reversible.
+
+The tool is built for modern Plex homelabs running Plex alongside Radarr, Sonarr, Tdarr, or Unraid. It understands MKV-first libraries, HDR and Dolby Vision content, multi-language audio tracks, and the encode-quality signals embedded in filenames by tools like Radarr and Tdarr.
+
+**On a fresh install, `DRY_RUN=true` and `QUARANTINE_MODE=true` are the defaults.** The first run will never delete or move any file. You must explicitly set `DRY_RUN=false` in `config.json` to allow any action, and quarantine mode ensures files are moved — not destroyed — until you verify the results and clear the quarantine directory yourself.
 
 ---
 
-# Introduction
+## How It Works
 
-Plex DupeFinder is a python script that finds duplicate versions of media (TV episodes and movies) in your Plex Library and tells Plex to remove the lowest rated files/versions (based on user-specified scoring) to leave behind a single file/version.
+plex_dupefinder operates in three sequential passes:
 
-Duplicates can be either in bulk (automatic) or on-by-one (interactively).
+```text
+[PASS 0]  optional — trigger Plex analyze() + snapshot-diff
+    │     (ensures scoring uses fresh codec/bitrate metadata)
+    │
+    ▼
+[PASS 1]  Discovery  (read-only — no side effects)
+    │  ├─ fetch duplicate groups from Plex
+    │  ├─ score every candidate file
+    │  ├─ apply safety filters (age, sanity, thresholds)
+    │  ├─ select tentative keeper
+    │  └─ write JSON plan file
+    │
+    ▼
+[PASS 2]  Revalidation & Action
+       ├─ re-fetch each group from Plex
+       ├─ re-score and diff vs PASS 1 snapshot
+       ├─ stability check (detect active writes)
+       └─ quarantine  ──or──  DRY_RUN log
+```
 
+**PASS 0** (disabled by default, `PRE_ANALYZE_DUPLICATES=true`) calls `analyze()` on each duplicate item and polls Plex until the metadata has settled. Groups that time out or fail analysis are marked as skipped stubs and never proceed to scoring. This prevents decisions based on stale zero-bitrate or unknown-codec metadata.
 
-# Demo
+**PASS 1** is entirely read-only. It fetches duplicate groups from Plex, builds a score for each candidate file, runs all safety filters, selects a tentative keeper, and writes a JSON plan file to `plans/`. No file is touched, no Plex write is issued.
 
-Click to enlarge.
+**PASS 2** re-fetches each group from Plex independently, re-scores it, and diffs the fresh state against the PASS 1 snapshot. If anything changed between the two passes — file sizes, codecs, existence flags, or which file Plex now thinks is the keeper — the group is skipped. Only groups that pass this consistency check and a final stability check (file sizes stable across a short read-sleep-read window) proceed to action.
 
-[![asciicast](assets/demo.gif)](https://asciinema.org/a/180157?cols=180&rows=50)
+---
 
+## Safety Layers
 
-# Requirements
+Ten independent safety layers protect against data loss. Any one of them can abort a group independently of the others:
 
-1. Python 3.6+.
+- **DRY_RUN / AUDIT_MODE** — All mutations are no-ops by default; `AUDIT_MODE` forces dry-run even when `DRY_RUN=false` in config, without writing to disk.
+- **PASS 0 pre-analyze** — Groups with timed-out or failed `analyze()` calls are skipped before scoring.
+- **Filesystem-authoritative existence check** — Both Plex and the local filesystem must agree a file exists; disagreement is treated as MISSING, preventing removal of stale-metadata ghosts.
+- **File age cooldown** — Files younger than `MIN_FILE_AGE_HOURS` (default 24 h) are skipped, protecting active downloads and mid-import copies.
+- **Metadata sanity check** — Any candidate with zero duration, zero bitrate, or an unknown codec causes the entire group to be skipped.
+- **Score threshold** — If the score gap between the top two candidates is below `MIN_SCORE_DIFFERENCE`, the group is skipped; scoring ambiguity is not acted on.
+- **Size ratio protection** — If a non-keeper is more than `MAX_SIZE_RATIO` (default 5×) larger than the keeper, the group is skipped; a wildly larger sibling suggests a mis-pairing.
+- **PASS 2 revalidation** — Files, sizes, existence, duration, bitrate, codec, and optional partial hashes are diffed between PASS 1 and PASS 2; any change aborts the group.
+- **Stability check** — File sizes are read, a short sleep occurs, then re-read; any size change (active write) skips the group.
+- **Quarantine** — Removals move files to `QUARANTINE_DIR` with a `.dupefinder_meta.json` sidecar containing a ready-to-run `restore_command`; nothing is hard-deleted unless `QUARANTINE_MODE=false` is explicitly set.
 
-1. Required Python modules (see below).
+See [SAFETY_MODEL.md](SAFETY_MODEL.md) for a complete description of each layer.
 
+---
 
-# Installation
+## Quick Start
 
-_Note: Steps below are for Debian-based distros (other operating systems will require tweaking to the steps)._
+### Requirements
 
-1. Install Python 3 and PIP
+- Python 3.8 or later
+- Plex Media Server with **Allow media deletion** enabled (Settings → Server → Library)
+- Dependencies: `pip install -r requirements.txt`
 
-   ```
-   sudo apt install python3 python3-pip
-   ```
+### First Run
 
-1. Clone the Plex DupeFinder repo.
+```bash
+# 1. Copy the sample config
+cp config_sample.json config.json
 
-   ```
-   sudo git clone https://github.com/l3uddz/plex_dupefinder /opt/plex_dupefinder
-   ```
+# 2. Set the minimum required fields in config.json:
+#    PLEX_SERVER, PLEX_TOKEN, PLEX_LIBRARIES
 
-1. Find your user & group.
+# 3. Run — DRY_RUN=true by default, nothing will be deleted
+python3 plex_dupefinder.py
+```
 
-   ```
-   id
-   ```
+Review the console output and inspect `plans/dupefinder_plan_<run_id>_<timestamp>.json` to see exactly what the tool would do before enabling live mode.
 
-1. Fix permissions of the Plex DupeFinder folder (replace `user`/`group` with yours).
+### Finding Your Plex Token
 
-   ```
-   sudo chown -R user:group /opt/plex_dupefinder
-   ```
+See the official Plex support article: <https://support.plex.tv/articles/204059436>
 
-1. Go into the Plex DupeFinder folder.
-
-   ```
-   cd /opt/plex_dupefinder
-   ```
-
-1. Install the required python modules.
-
-   ```
-   sudo python3 -m pip install -r requirements.txt
-   ```
-
-1. Create a shortcut for Plex DupeFinder.
-
-   ```
-   sudo ln -s /opt/plex_dupefinder/plex_dupefinder.py /usr/local/bin/plex_dupefinder
-   ```
-
-1. Generate a `config.json` file.
-
-   ```
-   plex_dupefinder
-   ```
-
-1. Fill in Plex URL and credentials at the prompt to generated a Plex Access Token (optional).
-
-   ```
-   Dumping default config to: /opt/plex_dupefinder/config.json
-   Plex Server URL: http://localhost:32400
-   Plex Username: your_plex_username
-   Plex Password: your_plex_password
-   Auto Delete duplicates? [y/n]: n
-   Please edit the default configuration before running again!
-   ```
-
-1. Configure the `config.json` file.
-
-   ```
-   nano config.json
-   ```
-
-
-# Configuration
-
-## Sample
+### Enabling Live Mode (Quarantine)
 
 ```json
 {
-  "AUDIO_CODEC_SCORES": {
-    "Unknown": 0,
-    "aac": 1000,
-    "ac3": 1000,
-    "dca": 2000,
-    "dca-ma": 4000,
-    "eac3": 1250,
-    "flac": 2500,
-    "mp2": 500,
-    "mp3": 1000,
-    "pcm": 2500,
-    "truehd": 4500,
-    "wmapro": 200
-  },
-  "AUTO_DELETE": false,
-  "FIND_DUPLICATE_FILEPATHS_ONLY": false,
-  "FILENAME_SCORES": {
-    "*.avi": -1000,
-    "*.ts": -1000,
-    "*.vob": -5000,
-    "*1080p*BluRay*": 15000,
-    "*720p*BluRay*": 10000,
-    "*HDTV*": -1000,
-    "*PROPER*": 1500,
-    "*REPACK*": 1500,
-    "*Remux*": 20000,
-    "*WEB*CasStudio*": 5000,
-    "*WEB*KINGS*": 5000,
-    "*WEB*NTB*": 5000,
-    "*WEB*QOQ*": 5000,
-    "*WEB*SiGMA*": 5000,
-    "*WEB*TBS*": -1000,
-    "*WEB*TROLLHD*": 2500,
-    "*WEB*VISUM*": 5000,
-    "*dvd*": -1000
-  },
-  "PLEX_LIBRARIES": [
-    "Movies",
-    "TV"
-  ],
-  "PLEX_SERVER": "https://plex.your-server.com",
-  "PLEX_TOKEN": "",
-  "SCORE_FILESIZE": true,
-  "SKIP_LIST": [],
-  "VIDEO_CODEC_SCORES": {
-    "Unknown": 0,
-    "h264": 10000,
-    "h265": 5000,
-    "hevc": 5000,
-    "mpeg1video": 250,
-    "mpeg2video": 250,
-    "mpeg4": 500,
-    "msmpeg4": 100,
-    "msmpeg4v2": 100,
-    "msmpeg4v3": 100,
-    "vc1": 3000,
-    "vp9": 1000,
-    "wmv2": 250,
-    "wmv3": 250
-  },
-  "VIDEO_RESOLUTION_SCORES": {
-    "1080": 10000,
-    "480": 3000,
-    "4k": 20000,
-    "720": 5000,
-    "Unknown": 0,
-    "sd": 1000
+  "DRY_RUN": false,
+  "QUARANTINE_MODE": true,
+  "QUARANTINE_DIR": "/mnt/user/quarantine"
+}
+```
+
+Files are **moved** to `QUARANTINE_DIR`, never hard-deleted. Each moved file has a `.dupefinder_meta.json` sidecar written beside it containing the original path and a shell-ready `restore_command`. To restore a file, open its sidecar and run the `restore_command` field.
+
+---
+
+## Quarantine
+
+When `QUARANTINE_MODE=true`, the quarantine directory mirrors the original library structure anchored at the title directory:
+
+```
+Original  : /mnt/user/Media/TV/Breaking Bad/Season 01/Episode.mkv
+Quarantine: QUARANTINE_DIR/Breaking Bad/Season 01/Episode.mkv
+```
+
+A `.dupefinder_meta.json` sidecar is written beside every quarantined file:
+
+```json
+{
+  "original_path": "/mnt/user/Media/TV/Breaking Bad/Season 01/Episode.mkv",
+  "quarantine_path": "/mnt/user/quarantine/Breaking Bad/Season 01/Episode.mkv",
+  "quarantine_timestamp": "2024-05-01T12:00:00+00:00",
+  "run_id": "a3f9c2d1e4b8",
+  "reason": "duplicate (keeper id=12345, highest score (87500) among existing files)",
+  "restore_command": "mv '/mnt/user/quarantine/Breaking Bad/Season 01/Episode.mkv' '/mnt/user/Media/TV/Breaking Bad/Season 01/Episode.mkv'",
+  "keeper": {
+    "files": ["/mnt/user/Media/TV/Breaking Bad/Season 01/Episode.2160p.BluRay.mkv"],
+    "score": 87500,
+    "score_breakdown": {
+      "video_codec": 12000,
+      "resolution": 20000,
+      "filename": 22000,
+      "audio_codec": 4500,
+      "bitrate": 8200,
+      "audio_channels": 6000,
+      "hdr": 3000
+    }
   }
 }
 ```
-## Foreword
 
-The scoring is based on: non-configurable and configurable parameters.
+To restore a quarantined file, copy the `restore_command` value and run it in a shell — no script required.
 
-  - Non-configurable parameters are: _bitrate_, _duration_, _height_, _width_, and _audio channel_.
+The script does not auto-purge the quarantine directory. After you have verified the results over your retention window (`QUARANTINE_RETENTION_DAYS` is informational), clear the quarantine directory manually.
 
-  - Configurable parameters are: _audio codec scores_, _video codec scores_, _video resolution scores_, _filename scores_, and _file sizes_ (can only be toggled on or off).
+---
 
-  - Note: bitrate, duration, height, width, audio channel, audio and video codecs, video resolutions (e.g. SD, 480p, 720p, 1080p, 4K, etc), and file sizes are all taken from the metadata Plex retrieves during media analysis.
+## Scoring
 
-## Details
+The scoring engine is designed for codec efficiency and encode quality, not raw file size. A compact HEVC remux should always outscore a bloated H.264 rip of the same content. `SCORE_FILESIZE` is `false` by default for exactly this reason.
 
-### Audio Codec Scores
+`get_score()` returns a `(total_score, breakdown_dict)` tuple. The breakdown records every component that contributed to the total — codec, resolution, filename patterns, bitrate, dimensions, audio channels, HDR/Dolby Vision bonuses, and track counts — so you can audit why the tool preferred one file over another. The breakdown is stored in the plan file, the JSON report, and the quarantine sidecar.
 
-- You can set `AUDIO_CODEC_SCORES` to your preference.
+The codec hierarchy puts AV1 (14 000) and HEVC/H.265 (12 000) well above H.264 (8 000), penalizes legacy formats (mpeg4, VC-1, WMV, MPEG-2), and gives a strong signal for Dolby Vision (5 000 bonus) and HDR (3 000 bonus). MKV container gets a filename-pattern bonus; AVI and VOB are penalized.
 
-- The default settings should be sufficient for most.
+See [SCORING.md](SCORING.md) for the full scoring tables and tuning guide.
 
+---
 
-### Auto Delete
+## Modes
 
-- Under `AUTO_DELETE`, set your desired option.
+| Mode | DRY_RUN | QUARANTINE_MODE | Effect |
+|------|---------|-----------------|--------|
+| Safe preview (default) | `true` | any | Simulates everything, logs only — no files touched |
+| Quarantine (recommended) | `false` | `true` | Moves files to `QUARANTINE_DIR`; Plex metadata removed after successful move |
+| Direct delete | `false` | `false` | Calls Plex DELETE API only — irreversible, no local file move |
+| Audit | `AUDIT_MODE=true` | any | Full two-pass pipeline including reports; `DRY_RUN` forced to `true` at runtime |
 
-  - `"AUTO_DELETE": true,`  - Plex DupeFinder will run in automatic mode.
+Direct delete mode is provided for setups where Plex runs on a remote host and the script cannot access the filesystem directly. It is irreversible — use quarantine mode whenever the script has filesystem access.
 
-  - `"AUTO_DELETE": false,` -  Plex DupeFinder will run in interactive mode. (Default)
+---
 
-    - Options:
+## Configuration
 
-      - Skip (i.e. keep both): `0`
+Minimum required `config.json`:
 
-      - Choose the best one (and delete the rest): `b`
-
-      - Select the item to keep (and delete the rest): `#` (i.e. `1`, `2`, `3`, etc).
-
-### Find Duplicate File Paths Only
-
-- Finds duplicates that only share the same file path.
-
-  ```json
-  "FIND_DUPLICATE_FILEPATHS_ONLY": false,
-  ```
-
-- This option has a very limited use case, i.e. in instances where Plex may have glitched and created multiple duplicates of the same media item.
-
-- If using this setting, we recommend using UnionFS-Fuse that can generate whiteout files (`*_HIDDEN~`) to prevent the deletion of the actual file on the system. The `_HIDDEN~` files can then be removed afterwards or even during the dupe cleanup (e.g. `watch -n 5 rm -rf /mnt/local/.unionfs-fuse/*`).
-
-- The default settings should be sufficient for most.
-
-### Filename Scores
-
-- You can set `FILENAME_SCORES` to your preference.
-
-- The default settings should be sufficient for most.
-
-### Plex Libraries
-
-1. Go to Plex and get all the names of your Plex Libraries you want to find duplicates in.
-
-   - Example Library:
-
-     ![](https://i.imgur.com/JFRTD1m.png)
-
-1. Under `PLEX_LIBRARIES`, list your Plex Libraries exactly as they are named in your Plex.
-
-   - Format:
-
-     ```json
-     "PLEX_LIBRARIES": [
-       "LIBRARY_NAME_1",
-       "LIBRARY_NAME_2"
-     ],
-     ```
-     or
-
-     ```json
-     "PLEX_LIBRARIES": ["LIBRARY_NAME_1", "LIBRARY_NAME_2"],
-     ```
-     
-   - Example:
-
-     ```json
-     "PLEX_LIBRARIES": [
-       "Movies",
-       "TV"
-     ],
-     ```
-
-### Plex Server URL
-
-- Your Plex server's URL.
-
-- This can be any format (e.g. <http://localhost:32400>, <https://plex.domain.ltd>).
-
-### Plex Token
-
-1. Obtain a Plex Access Token:
-
-   - Fill in the Plex URL and Plex login credentials, at the prompt, on first run. This only occurs when there is no `config.json` present.
-
-     or
-
-   - Visit https://support.plex.tv/hc/en-us/articles/204059436-Finding-an-authentication-token-X-Plex-Token
-
-1. Add the Plex Access Token to `"PLEX_TOKEN"` so that it now appears as `"PLEX_TOKEN": "abcd1234",`.
-
-   - Note: Make sure it is within the quotes (`"`) and there is a comma (`,`) after it.
-
-### Filesize Scores
-
-- `"SCORE_FILESIZE": true` will add more points to the overall score based on the actual file size.
-
-- The default settings should be sufficient for most.
-
-- Note: In some situations (e.g. a bad encode resulting in a large size), this may be something you want to turn it off (i.e. `false`).
-
-### Skip List
-
-- In Auto Delete mode, any file paths matching the patterns (i.e folders), listed in `SKIP_LIST`, will be ignored.
-
-- Example:
-
-  ```json
-  "SKIP_LIST": ["/Movies4K/"]
-  ```
-
-- The default settings should be sufficient for most.
-
-### Video Codec Scores
-
-- You can set `VIDEO_CODEC_SCORES` to your preference.
-
-- The default settings should be sufficient for most.
-
-### Video Resolution Scoring
-
-- You can set `VIDEO_RESOLUTION_SCORES` to your preference.
-
-- The default settings should be sufficient for most.
-
-
-# Plex
-
-You will need to make sure that **Allow media deletion** is enabled in Plex.
-
-1. In Plex, click the **Settings** icon -> **Server** -> **Library**.
-
-1. Set the following:
-
-   - **Allow media deletion**: `enabled`
-
-1. Click **SAVE CHANGES**.
-
-
-![](http://i.imgur.com/D82n8vh.png)
-
-
-# Usage
-
-Simply run the script/command:
-
-```
-plex_dupefinder
+```json
+{
+  "PLEX_SERVER": "https://plex.your-server.com",
+  "PLEX_TOKEN": "your-plex-token",
+  "PLEX_LIBRARIES": ["Movies", "TV Shows"],
+  "DRY_RUN": true
+}
 ```
 
-***
+All other keys have safe defaults. Run with `DRY_RUN=true` first and review the plan file before enabling live mode.
 
-# Donate
+See [CONFIGURATION.md](CONFIGURATION.md) for all configuration options with defaults, types, and descriptions.
 
-If you find this project helpful, feel free to make a small donation to the developer:
+---
 
-  - [Monzo](https://monzo.me/today): Credit Cards, Apple Pay, Google Pay
+## JSON Reports
 
-  - [Beerpay](https://beerpay.io/l3uddz/plex_dupefinder): Credit Cards
+After every run, two files are written (when configured):
 
-  - [Paypal: l3uddz@gmail.com](https://www.paypal.me/l3uddz)
+- **Plan file** — Written after PASS 1, before any action. Saved to `plans/dupefinder_plan_<run_id>_<timestamp>.json`. Contains the full PASS 1 snapshot: every duplicate group, scores, score breakdowns, existence checks, and the tentative keeper decision. Written unconditionally — even a run aborted at the confirmation prompt leaves an auditable plan.
 
-  - BTC: 3CiHME1HZQsNNcDL6BArG7PbZLa8zUUgjL
+- **Execution report** — Written at the end of the run to `JSON_REPORT_DIR/dupefinder_report_<run_id>_<timestamp>.json`. Covers all phase counters (PASS 0 verdicts, groups found/actioned/skipped), per-group records, integration results (Plex refresh, Radarr, Sonarr), a summary, and a redacted copy of the config (tokens and API keys replaced with `<redacted>`).
+
+Set `JSON_REPORT_DIR` in `config.json` to enable execution reports. The directory is created automatically if it does not exist.
+
+---
+
+## Integrations
+
+### Radarr
+
+Set `RADARR_RESCAN_AFTER=true`, `RADARR_URL`, and `RADARR_API_KEY` in `config.json`. After the run completes, plex_dupefinder posts a `RescanMovie` command to Radarr so it can detect and re-import any content affected by the cleanup.
+
+### Sonarr
+
+Set `SONARR_RESCAN_AFTER=true`, `SONARR_URL`, and `SONARR_API_KEY`. After the run, a `RescanSeries` command is posted to Sonarr.
+
+### Plex library refresh
+
+Set `PLEX_REFRESH_AFTER=true`. After the run, plex_dupefinder calls `section.update()` on each scanned library to refresh the Plex metadata index.
+
+---
+
+## Plex Setup
+
+**Allow media deletion** must be enabled in Plex before plex_dupefinder can remove duplicate metadata entries:
+
+1. Open Plex Web → Settings → Server → Library
+2. Enable **Allow media deletion**
+3. Click **Save Changes**
+
+Without this setting, Plex will reject the HTTP DELETE requests plex_dupefinder issues when removing duplicate metadata entries.
+
+---
+
+## Documentation
+
+- [CONFIGURATION.md](CONFIGURATION.md) — all configuration options, defaults, and types
+- [SCORING.md](SCORING.md) — scoring system, codec tables, and tuning guide
+- [SAFETY_MODEL.md](SAFETY_MODEL.md) — all ten safety layers in detail
+- [MIGRATION.md](MIGRATION.md) — differences from the upstream l3uddz/plex_dupefinder project
+- [RELEASE_NOTES.md](RELEASE_NOTES.md) — changelog
