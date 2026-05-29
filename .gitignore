@@ -1,6 +1,9 @@
 # User-specific stuff:
 .idea
 
+# Claude Code internal files
+.claude/
+
 ## File-based project format:
 *.iws
 
