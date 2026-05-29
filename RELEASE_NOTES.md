@@ -2,6 +2,56 @@
 
 **English** | [Español](RELEASE_NOTES.es.md)
 
+## v2.2.0-rc1 — Test release (2026)
+
+Release candidate for validation on a real library. Bundles the audit,
+testability, tooling and scoring work. The **stability / config / logging /
+reporting** block is ready to validate in production; the **scoring rework** is
+included but should be validated against real audit data before non-dry runs.
+
+### Audit & operational safety
+- `AUDIT_MODE` has two sub-modes via `CONFIRM_BEFORE_ACTION`: `false` = fully
+  unattended (cron), `true` = assisted manual selection. Per-group prompts only
+  occur on an acting run; audits never block on input.
+- Startup banner prints `INTERACTIVE_MODE / AUDIT_MODE / CONFIRM_BEFORE_ACTION`.
+- Quarantine of a multi-part item removes the Plex entry only if **every** part
+  moved (no disk orphans); partial failures preserve the entry and log it.
+
+### Testability & tests
+- The module is now import-safe: Plex connection, config validation and
+  log-file creation are deferred to the entrypoint; `config.py` falls back to
+  built-in defaults when run non-interactively.
+- `tests/` (pytest, third-party libs stubbed) covering `get_score`,
+  `select_keeper`, `check_file_exists`, `_quarantine_logical_path`,
+  `detect_inconsistencies`, source ranking, codec aliases, audio MAX and the
+  full preference order. `requirements-dev.txt` added.
+
+### Tooling (read-only, no production impact)
+- `tools/analyze_report.py` — simulate the proposed scoring over a real
+  plan/report and report keeper changes, anomalies and questionable decisions.
+- `tools/compare_plans.py` — diff keeper decisions between two plan files.
+
+### Scoring rework (validate before non-dry production)
+- Release **source** is a first-class single-value dimension (`SOURCE_SCORES`),
+  parsed from the filename; highest-quality source wins, never summed, bounded
+  below the resolution gap.
+- `BITRATE_SCORE_WEIGHT` (0.1) — bitrate reduced to a tie-breaker so a bloated
+  AVC no longer beats an efficient HEVC.
+- `FILENAME_SCORES` reduced to container/edition tie-breakers; positive sum
+  clamped by `FILENAME_SCORE_CAP`.
+- Audio channels scored from the richest single track (MAX), not the sum.
+- Codec aliases: `hevc=h265=x265`, `h264=x264=avc`.
+- Target order: 2160p DV/HDR HEVC > 2160p HEVC > 1080p REMUX > 1080p HEVC >
+  1080p AVC > 720p AVC.
+
+> **Upgrade note:** on first run after pulling, `upgrade_settings()` adds the new
+> keys to your `config.json` and exits for review. Your existing `FILENAME_SCORES`
+> are preserved, so the source-type filename patterns may coexist with the new
+> `SOURCE_SCORES` (double-counting) until you trim them — validate scoring with
+> an audit + `tools/analyze_report.py` before going non-dry.
+
+---
+
 ## v2.1.0 — Operational Hardening (2026)
 
 Incremental release. No architecture changes, no breaking changes.

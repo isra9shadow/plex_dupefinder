@@ -2,6 +2,60 @@
 
 [English](RELEASE_NOTES.md) | **Español**
 
+## v2.2.0-rc1 — Release de pruebas (2026)
+
+Candidata a versión para validar en una biblioteca real. Agrupa el trabajo de
+auditoría, testabilidad, tooling y scoring. El bloque de **estabilidad / config /
+logging / reporting** está listo para validar en producción; la **reescritura de
+scoring** se incluye pero debe validarse con datos de auditoría reales antes de
+ejecuciones no-dry.
+
+### Auditoría y seguridad operativa
+- `AUDIT_MODE` tiene dos submodos vía `CONFIRM_BEFORE_ACTION`: `false` = totalmente
+  desatendido (cron), `true` = selección manual asistida. Los avisos por grupo solo
+  ocurren en una ejecución que actúa; las auditorías nunca se bloquean esperando
+  entrada.
+- El banner de inicio imprime `INTERACTIVE_MODE / AUDIT_MODE / CONFIRM_BEFORE_ACTION`.
+- La cuarentena de un elemento multiparte elimina la entrada de Plex solo si se
+  movieron **todas** las partes (sin huérfanos en disco); los fallos parciales
+  preservan la entrada y la registran.
+
+### Testabilidad y tests
+- El módulo ahora es import-safe: la conexión a Plex, la validación de config y la
+  creación del fichero de log se difieren al entrypoint; `config.py` cae a defaults
+  si se ejecuta de forma no interactiva.
+- `tests/` (pytest, librerías de terceros stubeadas) que cubren `get_score`,
+  `select_keeper`, `check_file_exists`, `_quarantine_logical_path`,
+  `detect_inconsistencies`, ranking de source, alias de códec, audio MAX y el orden
+  de preferencia completo. Añadido `requirements-dev.txt`.
+
+### Tooling (solo lectura, sin impacto en producción)
+- `tools/analyze_report.py` — simula el scoring propuesto sobre un plan/report real
+  y reporta cambios de keeper, anomalías y decisiones sospechosas.
+- `tools/compare_plans.py` — compara las decisiones de keeper entre dos planes.
+
+### Reescritura de scoring (validar antes de producción no-dry)
+- El **source** del release es una dimensión de primera clase de valor único
+  (`SOURCE_SCORES`), parseada del nombre; gana el source de mayor calidad, nunca se
+  suma, acotado por debajo de la diferencia de resolución.
+- `BITRATE_SCORE_WEIGHT` (0.1) — el bitrate se reduce a desempate para que un AVC
+  inflado ya no gane a un HEVC eficiente.
+- `FILENAME_SCORES` reducido a desempates de contenedor/edición; suma positiva
+  acotada por `FILENAME_SCORE_CAP`.
+- Canales de audio puntuados por la pista más rica (MAX), no la suma.
+- Alias de códec: `hevc=h265=x265`, `h264=x264=avc`.
+- Orden objetivo: 2160p DV/HDR HEVC > 2160p HEVC > 1080p REMUX > 1080p HEVC >
+  1080p AVC > 720p AVC.
+
+> **Nota de actualización:** en el primer arranque tras el pull, `upgrade_settings()`
+> añade las claves nuevas a tu `config.json` y sale para que revises. Tus
+> `FILENAME_SCORES` existentes se conservan, así que los patrones de source en el
+> nombre pueden coexistir con el nuevo `SOURCE_SCORES` (doble conteo) hasta que los
+> recortes — valida el scoring con un audit + `tools/analyze_report.py` antes de ir
+> a no-dry.
+
+---
+
 ## v2.1.0 — Endurecimiento operativo (2026)
 
 Versión incremental. Sin cambios de arquitectura, sin cambios que rompan compatibilidad.
