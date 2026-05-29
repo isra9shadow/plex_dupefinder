@@ -27,9 +27,13 @@ htmlcov/
 # databases
 *.db
 
-# configs — config.json is local (treat like .env); only the sample is versioned
+# configs — config.json is local (treat like .env); only the sample is versioned.
+# /*.json covers config.json and config.new.json; /config.json.* covers local
+# backups like config.json.factory / config.json.bak so a PLEX_TOKEN can never
+# be committed. The versioned template is re-included last.
 *.cfg
 /*.json
+/config.json.*
 !/config_sample.json
 
 # runtime artifacts written next to the script (logs are covered by *.log* above)

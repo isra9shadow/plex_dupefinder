@@ -570,7 +570,7 @@ Para mayor confianza en la PASADA 2 (especialmente en bibliotecas activas donde 
 `config.json` contiene credenciales que conceden acceso completo a tu servidor de Plex y, opcionalmente, a tus instancias de Radarr y Sonarr.
 
 - **Restringe los permisos del fichero.** En Linux/macOS: `chmod 600 config.json`. En Windows: asegúrate de que el fichero solo sea accesible para tu cuenta de usuario.
-- **Nunca subas `config.json` al control de versiones.** El `.gitignore` del repositorio lo excluye por defecto. Verifícalo antes de cualquier `git add`.
+- **Nunca subas `config.json` al control de versiones.** El `.gitignore` del repositorio lo excluye —junto con backups locales como `config.json.factory` / `config.json.bak` y `config.new.json`— por defecto. Verifícalo con `git status` antes de cualquier `git add`.
 - **Usa la rotación de `PLEX_TOKEN`.** Los tokens de Plex no caducan automáticamente. Rota tu token periódicamente vía la interfaz web de Plex, especialmente tras cualquier sospecha de exposición.
 - **Las claves sensibles se censuran en los reportes.** `PLEX_TOKEN`, `RADARR_API_KEY` y `SONARR_API_KEY` se reemplazan por `"<redacted>"` en todos los ficheros de plan y reportes JSON. No copies manualmente estos valores en reportes o registros.
 - **Tokens con privilegios mínimos.** Si tus instancias de Radarr/Sonarr admiten claves de API con alcance limitado, usa una clave que solo pueda disparar reescaneos en lugar de una clave de administrador completo.

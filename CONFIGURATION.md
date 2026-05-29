@@ -570,7 +570,7 @@ For additional PASS 2 confidence (especially on active libraries where Tdarr or 
 `config.json` contains credentials that grant full access to your Plex server and optionally your Radarr and Sonarr instances.
 
 - **Restrict file permissions.** On Linux/macOS: `chmod 600 config.json`. On Windows: ensure the file is accessible only to your user account.
-- **Never commit `config.json` to source control.** The repository's `.gitignore` excludes it by default. Verify this before any `git add`.
+- **Never commit `config.json` to source control.** The repository's `.gitignore` excludes it — along with local backups like `config.json.factory` / `config.json.bak` and `config.new.json` — by default. Verify with `git status` before any `git add`.
 - **Use `PLEX_TOKEN` rotation.** Plex tokens do not expire automatically. Rotate your token periodically via the Plex web interface, especially after any suspected exposure.
 - **Sensitive keys are redacted in reports.** `PLEX_TOKEN`, `RADARR_API_KEY`, and `SONARR_API_KEY` are replaced with `"<redacted>"` in all plan files and JSON reports. Do not manually copy these values into reports or logs.
 - **Least-privilege tokens.** If your Radarr/Sonarr instances support scoped API keys, use a key that can only trigger rescans rather than a full-admin key.
