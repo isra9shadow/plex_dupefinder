@@ -1,5 +1,7 @@
 # Scoring Reference
 
+**English** | [Español](SCORING.es.md)
+
 ## Philosophy
 
 Scoring determines which duplicate to **keep** — the candidate with the highest total score
@@ -144,7 +146,6 @@ Example: `Movie.2021.1080p.BluRay.Remux.mkv` would match both `*Remux*` (+25000)
 | Pattern | Score |
 |---|---|
 | `*Remux*` | 25000 |
-| `*bluray-2160p` | 22000 |
 | `*2160p*BluRay*` | 20000 |
 | `*4K*BluRay*` | 20000 |
 | `*1080p*BluRay*` | 15000 |

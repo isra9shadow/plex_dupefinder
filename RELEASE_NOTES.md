@@ -1,5 +1,44 @@
 # Release Notes
 
+**English** | [Español](RELEASE_NOTES.es.md)
+
+## v2.1.0 — Operational Hardening (2026)
+
+Incremental release. No architecture changes, no breaking changes.
+
+### Fixes
+
+- **Direct-delete messaging corrected.** The runtime banner previously claimed
+  "files remain on disk, untracked" in direct-delete mode. This was wrong:
+  with Plex's **Allow media deletion** enabled (required), the Plex media
+  DELETE removes the file from disk. The banner, `README.md`, and
+  `SAFETY_MODEL.md` now state plainly that direct delete is irreversible and
+  deletes the file (except in `FIND_DUPLICATE_FILEPATHS_ONLY` mode, which is
+  metadata-only because all entries share one physical file).
+- **`build_config()` wizard bug.** Answering the "Auto Delete duplicates?"
+  prompt correctly on the first try left `AUTO_DELETE` at `false` regardless of
+  the answer (the assignment lived inside the invalid-input loop). Fixed.
+- **`PLEX_DELETE_DELAY_SECONDS` added to `base_config`.** It was documented and
+  used but missing from the defaults, so `upgrade_settings()` never added it to
+  existing configs. It is now a first-class default (`2.0`).
+
+### Operational features
+
+- **Rotating logs + `LOG_LEVEL`.** `activity.log` now uses a
+  `RotatingFileHandler` capped at 10 MiB × 5 backups, so scheduled unattended
+  runs on large libraries cannot fill the disk. New `LOG_LEVEL` config key
+  (default `INFO`; set `DEBUG` for per-part tracing).
+- **Library-name validation.** At startup, every name in `PLEX_LIBRARIES` is
+  checked against the libraries that exist on the server. A typo now aborts
+  (exit code 2) with the list of available libraries, instead of silently
+  doing nothing for that library.
+- **Quarantine summary.** Every run reports the standing quarantine contents —
+  file count, total size, oldest file age, and count exceeding
+  `QUARANTINE_RETENTION_DAYS` — to stdout and the JSON report (`quarantine`
+  key). Read-only; nothing is ever auto-purged.
+
+---
+
 ## v2.0.0 — Safety-First Rewrite (2026)
 
 Complete rewrite focused on operational safety for production Plex homelabs.
@@ -198,7 +237,6 @@ correlation.
 - Input validation throughout (`isdigit()` checked before `int()` conversion).
 - `REDACTED_KEYS` tuple ensures `PLEX_TOKEN`, `RADARR_API_KEY`, and
   `SONARR_API_KEY` are never written to plan files or JSON reports.
-- Comprehensive structured logging to `activity.log` (DEBUG level) and
-  `decisions.log` (human-readable per-group keep/remove record).
-- Dead code noted: `_safe_path_segment()` is defined but never called; it
-  predates the current `_quarantine_logical_path()` implementation.
+- Comprehensive structured logging to `activity.log` and `decisions.log`
+  (human-readable per-group keep/remove record). See v2.1.0 for log rotation
+  and the configurable `LOG_LEVEL`.

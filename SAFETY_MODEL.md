@@ -1,5 +1,7 @@
 # Safety Model
 
+**English** | [Español](SAFETY_MODEL.es.md)
+
 ## Core Principle
 
 **Prefer false negatives over false positives.**
@@ -383,8 +385,12 @@ operator's responsibility.
 **When to disable:** Set `QUARANTINE_MODE=false` only when operating in
 `FIND_DUPLICATE_FILEPATHS_ONLY` mode (identical file paths, metadata-only cleanup) or when
 quarantine storage is genuinely unavailable. When disabled, `remove_item()` calls only
-`remove_plex_metadata()` — the underlying file is not touched, but no sidecar is written and
-recovery requires manual Plex database inspection.
+`remove_plex_metadata()`, which issues the Plex media DELETE. With **Allow media deletion**
+enabled in Plex (required for the script to function at all), Plex **permanently removes the
+underlying file from disk** — there is no sidecar and no restore path; recovery is impossible
+via this script. The sole exception is `FIND_DUPLICATE_FILEPATHS_ONLY` mode: because every
+entry points at the same physical file, only the redundant Plex metadata is cleared and the
+file is left in place.
 
 ---
 

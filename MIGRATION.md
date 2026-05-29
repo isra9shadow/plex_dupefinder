@@ -1,5 +1,7 @@
 # Migration from Upstream plex_dupefinder
 
+**English** | [Español](MIGRATION.es.md)
+
 ## Why This Fork Exists
 
 The upstream `l3uddz/plex_dupefinder` project has a critical bug that can permanently
@@ -217,6 +219,8 @@ to an existing `config.json` by `upgrade_settings()` on first startup after upgr
 | `SONARR_API_KEY` | `""` | Sonarr API key; redacted in reports and plan files |
 | `SONARR_RESCAN_AFTER` | `false` | POST a `RescanSeries` command to Sonarr after the run |
 | `REQUESTS_TIMEOUT` | `30` | Timeout in seconds for all HTTP requests (Plex DELETE, Radarr, Sonarr) |
+| `PLEX_DELETE_DELAY_SECONDS` | `2.0` | Sleep between consecutive removals within a group during PASS 2 to avoid hammering the Plex API; `0` disables |
+| `LOG_LEVEL` | `"INFO"` | `activity.log` verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`); the log is size-rotated (10 MiB × 5 backups) regardless |
 
 ---
 

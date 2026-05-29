@@ -17,7 +17,9 @@ Two-pass design (the core safety guarantee):
 Modes:
     DRY_RUN=True             (default) → simulate everything
     QUARANTINE_MODE=True     (default) → move to QUARANTINE_DIR
-    DRY_RUN=False, QUARANTINE_MODE=False → direct Plex DELETE
+    DRY_RUN=False, QUARANTINE_MODE=False → direct Plex DELETE: with Plex's
+        "Allow media deletion" enabled (required), Plex removes the file
+        from disk. Irreversible — no quarantine, no sidecar, no restore.
 
 Filesystem is authoritative; Plex metadata is informational.
 Prefer false negatives over false positives.
@@ -34,6 +36,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from fnmatch import fnmatch
+from logging.handlers import RotatingFileHandler
 
 from tabulate import tabulate
 
@@ -57,12 +60,21 @@ log_filename = os.path.join(SCRIPT_DIR, 'activity.log')
 decision_filename = os.path.join(SCRIPT_DIR, 'decisions.log')
 default_plans_dir = os.path.join(SCRIPT_DIR, 'plans')
 
-logging.basicConfig(
-    filename=log_filename,
-    level=logging.DEBUG,
-    format='[%(asctime)s] %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+# Rotating log so unattended/scheduled runs on large libraries cannot grow
+# activity.log without bound. 10 MiB × 5 backups = 60 MiB ceiling. Level is
+# configurable via LOG_LEVEL (default INFO); set DEBUG for per-part tracing.
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUP_COUNT = 5
+
+_log_level = getattr(logging, str(cfg.get('LOG_LEVEL', 'INFO')).upper(), logging.INFO)
+_log_handler = RotatingFileHandler(
+    log_filename, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding='utf-8'
 )
+_log_handler.setFormatter(logging.Formatter(
+    fmt='[%(asctime)s] %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+))
+logging.basicConfig(level=_log_level, handlers=[_log_handler])
 logging.getLogger('urllib3.connectionpool').disabled = True
 log = logging.getLogger("Plex_Dupefinder")
 
@@ -85,6 +97,7 @@ run_report = {
     'groups': [],
     'integrations': {},
     'summary': {},
+    'quarantine': None,
     'errors': [],
 }
 
@@ -162,6 +175,39 @@ except Exception:
     log.exception("Exception connecting to Plex server %r", cfg['PLEX_SERVER'])
     print("Exception connecting to %s — see activity.log" % cfg['PLEX_SERVER'])
     sys.exit(1)
+
+
+def validate_libraries(plex_server):
+    """Abort if any configured PLEX_LIBRARIES name does not exist on the server.
+
+    A typo'd library name would otherwise be swallowed in the discovery loop
+    and the run would silently do nothing for it — a common, hard-to-notice
+    mistake on unattended schedules. Fail fast with the list of valid names.
+    """
+    configured = cfg.get('PLEX_LIBRARIES') or []
+    try:
+        available = {section.title for section in plex_server.library.sections()}
+    except Exception:
+        log.exception("Failed to enumerate Plex library sections")
+        print("Exception listing Plex libraries — see activity.log")
+        sys.exit(1)
+
+    missing = [name for name in configured if name not in available]
+    if missing:
+        log.error("Configured libraries not found on Plex: %s (available: %s)",
+                  missing, sorted(available))
+        print("[X] Configured libraries not found on Plex server: %s"
+              % ", ".join(repr(m) for m in missing))
+        print("    Available libraries: %s"
+              % (", ".join(repr(a) for a in sorted(available)) or "(none)"))
+        print("\nAborting — fix PLEX_LIBRARIES in config.json.")
+        sys.exit(2)
+
+    log.info("Validated %d configured libraries against Plex: %s",
+             len(configured), configured)
+
+
+validate_libraries(plex)
 
 
 ############################################################
@@ -1341,6 +1387,75 @@ def detect_inconsistencies(snapshot_parts, fresh_parts, snapshot_decision, fresh
 ############################################################
 
 
+def summarize_quarantine():
+    """Read-only summary of the current QUARANTINE_DIR contents.
+
+    Walks the quarantine tree for ``.dupefinder_meta.json`` sidecars and
+    aggregates count, total size, and age. This is the standing quarantine
+    (everything moved by prior runs too), giving operators visibility into
+    growth so they can decide when to purge manually. It NEVER deletes or
+    modifies anything.
+
+    Age uses the sidecar's ``quarantine_timestamp`` — not file mtime, which
+    shutil.move preserves from the original and would misreport time-in-quarantine.
+    """
+    qdir = (cfg.get('QUARANTINE_DIR') or '').strip()
+    summary = {
+        'enabled': bool(qdir),
+        'dir': qdir or None,
+        'file_count': 0,
+        'total_bytes': 0,
+        'total_human': bytes_to_string(0),
+        'oldest_age_days': None,
+        'retention_days': cfg.get('QUARANTINE_RETENTION_DAYS'),
+        'files_over_retention': 0,
+        'sidecars_unreadable': 0,
+    }
+    if not qdir or not os.path.isdir(qdir):
+        return summary
+
+    retention_days = float(cfg.get('QUARANTINE_RETENTION_DAYS') or 0)
+    now = datetime.now(timezone.utc)
+    oldest_age = None
+
+    for root, _dirs, files in os.walk(qdir):
+        for name in files:
+            if not name.endswith('.dupefinder_meta.json'):
+                continue
+            sidecar = os.path.join(root, name)
+            try:
+                with open(sidecar, 'r', encoding='utf-8') as fp:
+                    meta = json.load(fp)
+            except (OSError, ValueError):
+                summary['sidecars_unreadable'] += 1
+                continue
+
+            summary['file_count'] += 1
+
+            size = meta.get('original_size')
+            if isinstance(size, (int, float)) and size > 0:
+                summary['total_bytes'] += int(size)
+
+            ts = meta.get('quarantine_timestamp')
+            if ts:
+                try:
+                    moved_at = datetime.fromisoformat(ts)
+                    if moved_at.tzinfo is None:
+                        moved_at = moved_at.replace(tzinfo=timezone.utc)
+                    age_days = (now - moved_at).total_seconds() / 86400.0
+                except ValueError:
+                    age_days = None
+                if age_days is not None:
+                    if oldest_age is None or age_days > oldest_age:
+                        oldest_age = age_days
+                    if retention_days > 0 and age_days > retention_days:
+                        summary['files_over_retention'] += 1
+
+    summary['total_human'] = bytes_to_string(summary['total_bytes'])
+    summary['oldest_age_days'] = round(oldest_age, 1) if oldest_age is not None else None
+    return summary
+
+
 def write_decision(title=None, keeping=None, removed=None, note=None):
     lines = []
     if title:
@@ -1901,7 +2016,7 @@ if __name__ == "__main__":
         print("MODE: QUARANTINE — files will be moved to:")
         print("      %s" % cfg.get('QUARANTINE_DIR'))
     else:
-        print("MODE: DIRECT DELETE — Plex metadata will be removed (files remain on disk, untracked)")
+        print("MODE: DIRECT DELETE — Plex will DELETE the file from disk (irreversible, no quarantine)")
     print("AUTO_DELETE=%s | MIN_FILE_AGE_HOURS=%s | MIN_SCORE_DIFFERENCE=%s | MAX_SIZE_RATIO=%s"
           % (auto_delete, cfg.get('MIN_FILE_AGE_HOURS'),
              cfg.get('MIN_SCORE_DIFFERENCE'), cfg.get('MAX_SIZE_RATIO')))
@@ -2016,6 +2131,9 @@ if __name__ == "__main__":
         'freed_human': bytes_to_string(totals['freed_bytes']),
     }
 
+    quarantine_stats = summarize_quarantine()
+    run_report['quarantine'] = quarantine_stats
+
     write_json_report()
 
     print("\n" + "=" * 60)
@@ -2037,3 +2155,20 @@ if __name__ == "__main__":
     print("Items removed                     : %d" % totals['items_removed'])
     print("Items failed to remove            : %d" % totals['items_failed'])
     print("Space freed (actual moves)        : %s" % bytes_to_string(totals['freed_bytes']))
+
+    if quarantine_stats['enabled']:
+        print("-" * 60)
+        print("QUARANTINE (standing total in %s)" % quarantine_stats['dir'])
+        print("Files in quarantine               : %d" % quarantine_stats['file_count'])
+        print("Quarantine size                   : %s" % quarantine_stats['total_human'])
+        oldest = quarantine_stats['oldest_age_days']
+        print("Oldest file age                   : %s"
+              % ("%.1f days" % oldest if oldest is not None else "n/a"))
+        retention = quarantine_stats['retention_days']
+        if retention:
+            print("Files older than %-4s days        : %d"
+                  % (retention, quarantine_stats['files_over_retention']))
+        if quarantine_stats['sidecars_unreadable']:
+            print("Unreadable sidecars (skipped)     : %d"
+                  % quarantine_stats['sidecars_unreadable'])
+        print("(quarantine is never auto-purged — review and clear it manually)")

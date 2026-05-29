@@ -116,6 +116,10 @@ base_config = {
     # Pause for confirmation between discovery and action when auto-deleting
     # in a non-dry-run mode. Manual mode ignores this (per-item prompts).
     'CONFIRM_BEFORE_ACTION': True,
+    # Sleep between consecutive removals within a group during PASS 2, to
+    # avoid hammering the Plex HTTP API. Increase if Plex returns rate-limit
+    # errors. Set to 0 to disable.
+    'PLEX_DELETE_DELAY_SECONDS': 2.0,
     # ----- PASS 0: optional Plex re-analyse before scoring -----
     # When True, every duplicate item gets item.analyze() called and we
     # poll for fresh metadata before discovery scores it. This avoids
@@ -127,6 +131,10 @@ base_config = {
     # ----- Reporting -----
     # Directory to write per-run JSON reports. Empty disables reporting.
     'JSON_REPORT_DIR': '',
+    # File log verbosity for activity.log. One of DEBUG, INFO, WARNING, ERROR.
+    # Default INFO; DEBUG adds per-part tracing (large on big libraries).
+    # activity.log is size-rotated (10 MiB x 5 backups) regardless of level.
+    'LOG_LEVEL': 'INFO',
 
     # ----- Integrations -----
     'PLEX_REFRESH_AFTER': False,
@@ -199,13 +207,10 @@ def build_config():
     password = getpass('Plex Password: ')
 
     # Get choice for Auto Deletion
-    auto_del = input("Auto Delete duplicates? [y/n]: ")
-    while auto_del.strip().lower() not in ['y', 'n']:
-        auto_del = input("Auto Delete duplicates? [y/n]: ")
-        if auto_del.strip().lower() == 'y':
-            configs['auto_delete'] = True
-        elif auto_del.strip().lower() == 'n':
-            configs['auto_delete'] = False
+    auto_del = input("Auto Delete duplicates? [y/n]: ").strip().lower()
+    while auto_del not in ('y', 'n'):
+        auto_del = input("Auto Delete duplicates? [y/n]: ").strip().lower()
+    configs['auto_delete'] = (auto_del == 'y')
 
     account = MyPlexAccount(user, password)
     configs['token'] = account.authenticationToken

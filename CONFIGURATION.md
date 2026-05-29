@@ -1,5 +1,7 @@
 # Configuration Reference
 
+**English** | [Español](CONFIGURATION.es.md)
+
 ## Overview
 
 All settings live in `config.json`, located in the same directory as the script. On first run without a `config.json`, a setup wizard guides you through creating one interactively. On every subsequent run, `upgrade_settings()` automatically merges any new keys introduced by the current release into your existing `config.json` without overwriting values you have already set — it prints the added keys and exits so you can review before proceeding.
@@ -59,8 +61,8 @@ The script ships with a conservative safety posture. A brand-new `config.json` w
 **`PLEX_LIBRARIES`**
 - Default: `[]`
 - Type: list of strings
-- Description: Names of the Plex library sections to scan for duplicates. Must match the library names exactly as they appear in Plex. Required — `validate_config` aborts if the list is empty. Example: `["Movies", "TV Shows", "4K Movies"]`.
-- Risk: 🟡 An incorrect library name is silently skipped (Plex returns no results for an unknown section).
+- Description: Names of the Plex library sections to scan for duplicates. Must match the library names exactly as they appear in Plex. Required — `validate_config` aborts if the list is empty. Example: `["Movies", "TV Shows", "4K Movies"]`. After connecting, `validate_libraries()` checks every configured name against the libraries that actually exist on the server.
+- Risk: 🟡 If any configured name does not exist on the Plex server, the script aborts at startup (exit code 2) and prints the list of available libraries, rather than silently doing nothing for the typo'd name.
 
 ---
 
@@ -257,11 +259,11 @@ Scoring determines which duplicate is kept. The candidate with the highest total
 | `*Remux*` | 25000 |
 | `*2160p*BluRay*` | 20000 |
 | `*4K*BluRay*` | 20000 |
-| `*bluray-2160p` | 22000 |
 | `*1080p*BluRay*` | 15000 |
 | `*2160p*WEB-DL*` | 14000 |
 | `*4K*WEB-DL*` | 14000 |
 | `*1080p*WEB-DL*` | 12000 |
+| `*720p*BluRay*` | 8000 |
 | `*WEB-DL*` | 6000 |
 | `*WEBRip*` | 4000 |
 | `*REPACK*` | 1500 |
@@ -269,7 +271,6 @@ Scoring determines which duplicate is kept. The candidate with the highest total
 | `*.mkv` | 2000 |
 | `*EXTENDED*` | 500 |
 | `*.mp4` | 500 |
-| `*720p*BluRay*` | 8000 |
 | `*HDTV*` | -5000 |
 | `*TS*` | -5000 |
 | `*.ts` | -5000 |
@@ -401,6 +402,18 @@ Scoring determines which duplicate is kept. The candidate with the highest total
 **Plan files** are always written (regardless of this setting) to `<script_dir>/plans/` after PASS 1 completes. The plan file captures the full PASS 1 snapshot before any action is taken, providing an auditable record even if you abort at the confirmation prompt. Plan filename: `dupefinder_plan_<run_id>_<YYYYMMDDTHHMMSSZ>.json`.
 
 - Risk: 🟢 Enabling creates files on disk but has no effect on removals.
+
+---
+
+**`LOG_LEVEL`**
+- Default: `"INFO"`
+- Type: string — one of `DEBUG`, `INFO`, `WARNING`, `ERROR` (case-insensitive)
+- Description: Verbosity of `activity.log`. `INFO` (default) records phase progress and every decision. `DEBUG` additionally logs a line per media part (existence, age) — useful for diagnosis but large on big libraries. An unrecognised value falls back to `INFO`. Regardless of level, `activity.log` is size-rotated by a `RotatingFileHandler` capped at **10 MiB × 5 backups** (≈60 MiB ceiling), so unattended scheduled runs cannot fill the disk.
+- Risk: 🟢 Affects logging only; no effect on removals.
+
+---
+
+**Quarantine summary** — At the end of every run (when `QUARANTINE_DIR` is set), the script reports the **standing** contents of the quarantine directory: file count, total size, oldest file age, and how many files exceed `QUARANTINE_RETENTION_DAYS`. This is read-only visibility only — the script never auto-purges. The same figures are written to the JSON report under the `quarantine` key. Age is derived from each sidecar's `quarantine_timestamp` (not file mtime, which `shutil.move` preserves from the original).
 
 ---
 

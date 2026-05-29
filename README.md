@@ -1,5 +1,7 @@
 # plex_dupefinder — Safe Plex Duplicate Manager
 
+**English** | [Español](README.es.md)
+
 <img src="assets/logo.svg" width="600" alt="Plex DupeFinder">
 
 A safety-first, quarantine-by-default duplicate manager for Plex Media Server.
@@ -147,7 +149,7 @@ A `.dupefinder_meta.json` sidecar is written beside every quarantined file:
 
 To restore a quarantined file, copy the `restore_command` value and run it in a shell — no script required.
 
-The script does not auto-purge the quarantine directory. After you have verified the results over your retention window (`QUARANTINE_RETENTION_DAYS` is informational), clear the quarantine directory manually.
+The script does not auto-purge the quarantine directory. After you have verified the results over your retention window (`QUARANTINE_RETENTION_DAYS` is informational), clear the quarantine directory manually. To help you decide when, every run prints a standing-quarantine summary — file count, total size, oldest file age, and how many files exceed `QUARANTINE_RETENTION_DAYS` — and writes the same figures to the JSON report under the `quarantine` key. This is reporting only; nothing is ever deleted automatically.
 
 ---
 
@@ -169,10 +171,10 @@ See [SCORING.md](SCORING.md) for the full scoring tables and tuning guide.
 |------|---------|-----------------|--------|
 | Safe preview (default) | `true` | any | Simulates everything, logs only — no files touched |
 | Quarantine (recommended) | `false` | `true` | Moves files to `QUARANTINE_DIR`; Plex metadata removed after successful move |
-| Direct delete | `false` | `false` | Calls Plex DELETE API only — irreversible, no local file move |
+| Direct delete | `false` | `false` | Calls the Plex media DELETE API — with **Allow media deletion** enabled (required), Plex removes the file from disk. Irreversible — no quarantine, no sidecar, no restore |
 | Audit | `AUDIT_MODE=true` | any | Full two-pass pipeline including reports; `DRY_RUN` forced to `true` at runtime |
 
-Direct delete mode is provided for setups where Plex runs on a remote host and the script cannot access the filesystem directly. It is irreversible — use quarantine mode whenever the script has filesystem access.
+Direct delete mode is provided for setups where Plex runs on a remote host and the script cannot reach the filesystem to perform quarantine moves itself. In this mode Plex performs the deletion: with **Allow media deletion** enabled, the underlying file is permanently removed from disk. It is irreversible — use quarantine mode whenever the script has filesystem access. The only exception is `FIND_DUPLICATE_FILEPATHS_ONLY` mode, where all entries share one physical file and only the redundant Plex metadata is cleared.
 
 ---
 
@@ -201,7 +203,7 @@ After every run, two files are written (when configured):
 
 - **Plan file** — Written after PASS 1, before any action. Saved to `plans/dupefinder_plan_<run_id>_<timestamp>.json`. Contains the full PASS 1 snapshot: every duplicate group, scores, score breakdowns, existence checks, and the tentative keeper decision. Written unconditionally — even a run aborted at the confirmation prompt leaves an auditable plan.
 
-- **Execution report** — Written at the end of the run to `JSON_REPORT_DIR/dupefinder_report_<run_id>_<timestamp>.json`. Covers all phase counters (PASS 0 verdicts, groups found/actioned/skipped), per-group records, integration results (Plex refresh, Radarr, Sonarr), a summary, and a redacted copy of the config (tokens and API keys replaced with `<redacted>`).
+- **Execution report** — Written at the end of the run to `JSON_REPORT_DIR/dupefinder_report_<run_id>_<timestamp>.json`. Covers all phase counters (PASS 0 verdicts, groups found/actioned/skipped), per-group records, integration results (Plex refresh, Radarr, Sonarr), a standing-quarantine summary (under the `quarantine` key), a summary, and a redacted copy of the config (tokens and API keys replaced with `<redacted>`).
 
 Set `JSON_REPORT_DIR` in `config.json` to enable execution reports. The directory is created automatically if it does not exist.
 
