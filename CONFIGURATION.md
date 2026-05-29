@@ -209,7 +209,31 @@ The script ships with a conservative safety posture. A brand-new `config.json` w
 
 ### 4. Scoring
 
-Scoring determines which duplicate is kept. The candidate with the highest total score is the keeper; all others are candidates for removal. Each component adds or subtracts from the total. The full breakdown is stored in plan files, JSON reports, and quarantine sidecars.
+Scoring determines which duplicate is kept. The candidate with the highest total score is the keeper; all others are candidates for removal. Each component adds or subtracts from the total. The full breakdown is stored in plan files, JSON reports, and quarantine sidecars. Real media characteristics (resolution, codec, HDR/DV, audio) dominate; release source is a first-class dimension; filename patterns are bounded tie-breakers. See [SCORING.md](SCORING.md) for the complete model, tables and examples.
+
+---
+
+**`SOURCE_SCORES`**
+- Default: `{remux: 8000, bluray: 3000, web-dl: 2000, webrip: 1000, hdtv: -3000, dvd: -3000, cam: -15000}`
+- Type: object (source key → integer)
+- Description: First-class release-source scoring. Plex has no source field, so the source is parsed from the filename, but scored as a **single value** — the highest-quality source detected wins (never summed). `remux` (8000) is deliberately below the 4K↔1080p resolution gap (10000) so higher resolution still wins across tiers while REMUX wins within a tier.
+- Risk: 🟡 Changing values reorders source preference. Keep `remux` below the resolution gap to preserve resolution dominance.
+
+---
+
+**`FILENAME_SCORE_CAP`**
+- Default: `2000`
+- Type: integer
+- Description: Upper bound on the **positive** sum of `FILENAME_SCORES`, so stacking several filename patterns cannot dominate a real media decision. Negative legacy-container penalties are not capped. `0` disables the cap.
+- Risk: 🟢 Only limits filename influence.
+
+---
+
+**`BITRATE_SCORE_WEIGHT`**
+- Default: `0.1`
+- Type: float
+- Description: Multiplier applied to video bitrate (kbps). Low by design: bitrate correlates with codec **inefficiency** as much as quality, so a high value lets a bloated AVC outscore an efficient HEVC. Kept as a small tie-breaker.
+- Risk: 🟡 Raising it weakens HEVC-first behaviour.
 
 ---
 

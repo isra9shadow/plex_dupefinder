@@ -209,7 +209,31 @@ El script se distribuye con una postura de seguridad conservadora. Un `config.js
 
 ### 4. Puntuación
 
-La puntuación determina qué duplicado se conserva. El candidato con la mayor puntuación total es el guardado; todos los demás son candidatos a eliminación. Cada componente suma o resta al total. El desglose completo se almacena en ficheros de plan, reportes JSON y ficheros adjuntos de cuarentena.
+La puntuación determina qué duplicado se conserva. El candidato con la mayor puntuación total es el guardado; todos los demás son candidatos a eliminación. Cada componente suma o resta al total. El desglose completo se almacena en ficheros de plan, reportes JSON y ficheros adjuntos de cuarentena. Las características reales del medio (resolución, códec, HDR/DV, audio) dominan; el source del release es una dimensión de primera clase; los patrones de nombre son desempates acotados. Consulta [SCORING.es.md](SCORING.es.md) para el modelo completo, tablas y ejemplos.
+
+---
+
+**`SOURCE_SCORES`**
+- Por defecto: `{remux: 8000, bluray: 3000, web-dl: 2000, webrip: 1000, hdtv: -3000, dvd: -3000, cam: -15000}`
+- Tipo: objeto (clave de source → entero)
+- Descripción: Puntuación de source de primera clase. Plex no tiene campo de source, así que se parsea del nombre, pero se puntúa como **valor único** — gana el source de mayor calidad detectado (nunca se suma). `remux` (8000) está a propósito por debajo de la diferencia de resolución 4K↔1080p (10000), de modo que una resolución mayor sigue ganando entre tiers mientras el REMUX gana dentro de su tier.
+- Riesgo: 🟡 Cambiar valores reordena la preferencia de source. Mantén `remux` por debajo de la diferencia de resolución para preservar el dominio de la resolución.
+
+---
+
+**`FILENAME_SCORE_CAP`**
+- Por defecto: `2000`
+- Tipo: entero
+- Descripción: Límite superior de la suma **positiva** de `FILENAME_SCORES`, para que apilar varios patrones de nombre no pueda dominar una decisión real de medio. Las penalizaciones negativas de contenedores heredados no se acotan. `0` desactiva el tope.
+- Riesgo: 🟢 Solo limita la influencia del nombre.
+
+---
+
+**`BITRATE_SCORE_WEIGHT`**
+- Por defecto: `0.1`
+- Tipo: float
+- Descripción: Multiplicador aplicado al bitrate de vídeo (kbps). Bajo por diseño: el bitrate correlaciona con la **ineficiencia** del códec tanto como con la calidad, así que un valor alto deja que un AVC inflado gane a un HEVC eficiente. Se mantiene como desempate pequeño.
+- Riesgo: 🟡 Subirlo debilita el comportamiento HEVC-first.
 
 ---
 

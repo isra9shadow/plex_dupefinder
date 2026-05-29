@@ -97,6 +97,106 @@ def test_get_score_hdr_and_dv_add_bonuses(cfg):
     assert fancy - plain == cfg['HDR_SCORE'] + cfg['DOLBY_VISION_SCORE']
 
 
+def test_get_score_hevc_beats_avc_even_with_higher_bitrate(cfg):
+    # Issue #1: a bloated AVC must NOT outscore an efficient HEVC.
+    hevc = make_media(codec='hevc', acodec='eac3', bitrate=8000,
+                      files=['/m/Movie.1080p.WEB-DL.HEVC.mkv'])
+    avc = make_media(codec='h264', acodec='eac3', bitrate=25000,
+                     files=['/m/Movie.1080p.WEB-DL.x264.mkv'])
+    assert pd.get_score(hevc)[0] > pd.get_score(avc)[0]
+
+
+def test_get_score_codec_aliases(cfg):
+    assert pd.get_score(make_media(codec='x265'))[1]['video_codec'] == \
+        cfg['VIDEO_CODEC_SCORES']['hevc']
+    for avc_alias in ('h264', 'x264', 'avc'):
+        assert pd.get_score(make_media(codec=avc_alias))[1]['video_codec'] == 8000
+
+
+def test_get_score_filename_positive_sum_is_capped(cfg):
+    cfg['FILENAME_SCORE_CAP'] = 2000
+    # REPACK(500)+PROPER(500)+EXTENDED(500)+.mkv(800) = 2300 -> clamped to 2000.
+    m = make_media(files=['/m/Movie.REPACK.PROPER.EXTENDED.mkv'])
+    assert pd.get_score(m)[1]['filename'] == 2000
+
+
+def test_get_score_preference_order_matches_target(cfg):
+    # 2160p DV/HDR HEVC > 2160p HEVC > 1080p REMUX > 1080p HEVC > 1080p AVC > 720p AVC
+    a = make_media(codec='hevc', res='4k', hdr=True, dv=True, acodec='eac3',
+                   channels=6, bitrate=18000, files=['/m/M.2160p.WEB-DL.DV.HDR.HEVC.mkv'])
+    b = make_media(codec='hevc', res='4k', hdr=True, dv=False, acodec='eac3',
+                   channels=6, bitrate=18000, files=['/m/M.2160p.WEB-DL.HDR.HEVC.mkv'])
+    c = make_media(codec='h264', res='1080', acodec='truehd', channels=8,
+                   bitrate=30000, files=['/m/M.1080p.BluRay.REMUX.AVC.TrueHD.mkv'])
+    d = make_media(codec='hevc', res='1080', acodec='eac3', channels=6,
+                   bitrate=8000, files=['/m/M.1080p.WEB-DL.HEVC.mkv'])
+    e = make_media(codec='h264', res='1080', acodec='ac3', channels=6,
+                   bitrate=12000, files=['/m/M.1080p.WEB-DL.x264.mkv'])
+    f = make_media(codec='h264', res='720', acodec='ac3', channels=6,
+                   bitrate=6000, files=['/m/M.720p.WEB-DL.x264.mkv'])
+    scores = [pd.get_score(x)[0] for x in (a, b, c, d, e, f)]
+    assert scores == sorted(scores, reverse=True), scores
+
+
+# --------------------------------------------------------------------------- #
+# _source_score (first-class source dimension)
+# --------------------------------------------------------------------------- #
+
+def test_source_score_ranking(cfg):
+    cases = {
+        '/m/Movie.2160p.BluRay.REMUX.mkv': ('remux', 8000),
+        '/m/Movie.1080p.BluRay.x264.mkv': ('bluray', 3000),
+        '/m/Movie.1080p.WEB-DL.mkv': ('web-dl', 2000),
+        '/m/Movie.1080p.WEBRip.mkv': ('webrip', 1000),
+        '/m/Movie.1080p.HDTV.mkv': ('hdtv', -3000),
+        '/m/Movie.DVDRip.mkv': ('dvd', -3000),
+        '/m/Movie.2019.CAM.mkv': ('cam', -15000),
+    }
+    for path, (key, score) in cases.items():
+        assert pd._source_score([path]) == (score, key), path
+
+
+def test_source_score_highest_tier_wins_when_multiple(cfg):
+    # "BluRay REMUX" must score as remux, not bluray.
+    assert pd._source_score(['/m/Movie.2160p.BluRay.REMUX.HEVC.mkv']) == (8000, 'remux')
+
+
+def test_source_score_none_for_clean_filebot_name(cfg):
+    # Filebot-renamed file with no source tag → no source signal (not negative).
+    assert pd._source_score(['/m/Movie (2018).mkv']) == (0, None)
+
+
+# --------------------------------------------------------------------------- #
+# _max_audio_channels (MAX, not SUM)
+# --------------------------------------------------------------------------- #
+
+class _FakeStream:
+    def __init__(self, channels):
+        self.channels = channels
+
+
+class _FakePart:
+    def __init__(self, channels_list):
+        self._streams = [_FakeStream(c) for c in channels_list]
+
+    def audioStreams(self):
+        return self._streams
+
+
+class _FakeItem:
+    def __init__(self, parts_channels):
+        self.parts = [_FakePart(c) for c in parts_channels]
+
+
+def test_max_audio_channels_uses_max_not_sum():
+    # 7.1 + 5.1 + 2.0 commentary → 8 (richest track), NOT 16 (sum).
+    assert pd._max_audio_channels(_FakeItem([[8, 6, 2]])) == 8
+
+
+def test_max_audio_channels_across_parts():
+    assert pd._max_audio_channels(_FakeItem([[2], [6]])) == 6
+
+
 # --------------------------------------------------------------------------- #
 # select_keeper
 # --------------------------------------------------------------------------- #

@@ -648,6 +648,56 @@ def _count_streams(item):
     return audio_tracks, subtitles
 
 
+def _max_audio_channels(item):
+    """Channel count of the single richest audio track.
+
+    NOT the sum across tracks — summing would inflate a multi-dub release
+    (e.g. 7.1 + 5.1 + 2.0 = 16ch) far above an equivalent single-track file.
+    """
+    max_ch = 0
+    try:
+        for part in item.parts:
+            for stream in part.audioStreams():
+                ch = getattr(stream, 'channels', 0) or 0
+                if ch > max_ch:
+                    max_ch = ch
+    except Exception:
+        log.debug("Audio channel detection failed", exc_info=True)
+    return max_ch
+
+
+# Source-type detection. Plex exposes no "source" field, so it is parsed from
+# the filename — but as a SINGLE first-class value (the highest-quality match
+# wins, never summed), unlike the FILENAME_SCORES tie-breakers. Tiers are tried
+# best-first; the first match wins (so "BluRay REMUX" scores as remux).
+_SOURCE_DETECTORS = (
+    # (SOURCE_SCORES key, exact word tokens, multi-word substrings)
+    ('remux',  ('remux', 'bdremux', 'brremux'), ()),
+    ('bluray', ('bluray', 'bdrip', 'brrip'), ('blu ray',)),
+    ('web-dl', ('webdl',), ('web dl',)),
+    ('webrip', ('webrip',), ('web rip',)),
+    ('hdtv',   ('hdtv', 'pdtv', 'hdrip', 'dsr'), ()),
+    ('dvd',    ('dvdrip', 'dvd'), ()),
+    ('cam',    ('cam', 'hdcam', 'telesync', 'telecine', 'hdts'), ()),
+)
+
+
+def _source_score(files):
+    """Return (score, source_key) for the best source detected in the filenames.
+
+    A single value, never summed. (0, None) when no source is recognised — the
+    decision then rests on the real media signals (codec/resolution/HDR/audio).
+    """
+    source_scores = cfg.get('SOURCE_SCORES', {}) or {}
+    text = ' '.join(os.path.basename(str(f)).lower() for f in (files or []))
+    norm = re.sub(r'[._\-]+', ' ', text)
+    tokens = set(norm.split())
+    for key, words, phrases in _SOURCE_DETECTORS:
+        if any(w in tokens for w in words) or any(p in norm for p in phrases):
+            return int(source_scores.get(key, 0)), key
+    return 0, None
+
+
 def get_score(media_info):
     """
     Return (total_score: int, breakdown: dict).
@@ -673,6 +723,17 @@ def get_score(media_info):
         media_info['video_resolution'].lower(), 0))
     breakdown['resolution'] = resolution_pts
 
+    # Source type — a SINGLE first-class value (highest-quality source wins),
+    # parsed from the filename because Plex exposes no source field.
+    source_pts, source_key = _source_score(media_info.get('file', []))
+    breakdown['source'] = source_pts
+    if source_key:
+        breakdown['source_type'] = source_key
+
+    # FILENAME_SCORES are tie-breakers only (container + edition tags). The
+    # positive sum is clamped by FILENAME_SCORE_CAP so stacking patterns cannot
+    # dominate a real media decision; negative legacy-container penalties pass
+    # through uncapped (a genuine quality signal).
     filename_pts = 0
     filename_matches = []
     for filename_keyword, keyword_score in cfg['FILENAME_SCORES'].items():
@@ -680,12 +741,17 @@ def get_score(media_info):
             if fnmatch(os.path.basename(filename.lower()), filename_keyword.lower()):
                 filename_pts += int(keyword_score)
                 filename_matches.append({'pattern': filename_keyword, 'score': int(keyword_score)})
+    filename_cap = int(cfg.get('FILENAME_SCORE_CAP', 0) or 0)
+    if filename_cap > 0 and filename_pts > filename_cap:
+        filename_pts = filename_cap
     breakdown['filename'] = filename_pts
     if filename_matches:
         breakdown['filename_matches'] = filename_matches
 
-    # All numeric fields from get_media_info() are already int/float.
-    bitrate_pts = int(media_info['video_bitrate'] * 0.5)
+    # Bitrate is a small tie-breaker: it correlates with codec INEFFICIENCY as
+    # much as with quality, so a low weight keeps a bloated AVC from outscoring
+    # an efficient HEVC. Tunable via BITRATE_SCORE_WEIGHT.
+    bitrate_pts = int(media_info['video_bitrate'] * float(cfg.get('BITRATE_SCORE_WEIGHT', 0.1)))
     breakdown['bitrate'] = bitrate_pts
 
     duration_pts = int(media_info['video_duration'] / 300)
@@ -697,8 +763,9 @@ def get_score(media_info):
     audio_channel_pts = media_info['audio_channels'] * 1000
     breakdown['audio_channels'] = audio_channel_pts
 
-    total = (audio_codec_pts + video_codec_pts + resolution_pts + filename_pts
-             + bitrate_pts + duration_pts + dimensions_pts + audio_channel_pts)
+    total = (audio_codec_pts + video_codec_pts + resolution_pts + source_pts
+             + filename_pts + bitrate_pts + duration_pts + dimensions_pts
+             + audio_channel_pts)
 
     if media_info.get('has_hdr'):
         hdr_pts = int(cfg.get('HDR_SCORE', 0))
@@ -761,15 +828,9 @@ def get_media_info(item, compute_hashes=False):
         except AttributeError:
             pass
 
-    try:
-        for part in item.parts:
-            for stream in part.audioStreams():
-                if stream.channels:
-                    info['audio_channels'] += stream.channels
-        if info['audio_channels'] == 0:
-            info['audio_channels'] = getattr(item, 'audioChannels', 0) or 0
-    except AttributeError:
-        pass
+    # Richest single audio track, NOT the sum across tracks (which would
+    # artificially inflate multi-dub releases).
+    info['audio_channels'] = _max_audio_channels(item) or (getattr(item, 'audioChannels', 0) or 0)
 
     if len(item.parts) > 1:
         info['multipart'] = True

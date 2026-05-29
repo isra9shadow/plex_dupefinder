@@ -16,11 +16,13 @@ base_config = {
     'AUDIO_CODEC_SCORES': {'Unknown': 0, 'wmapro': 200, 'mp2': 500, 'mp3': 1000, 'ac3': 1000, 'dca': 2000, 'pcm': 2500,
                            'flac': 2500, 'dca-ma': 4000, 'truehd': 4500, 'aac': 1000, 'eac3': 1250, 'opus': 1500},
     # Modernised: HEVC/AV1 are the preferred archive codecs in 2024+; H.264 is
-    # acceptable but no longer the winner; legacy codecs are penalised.
+    # acceptable but no longer the winner; legacy codecs are penalised. Aliases
+    # are included (h265/x265 == hevc, x264/avc == h264) so a release labelled by
+    # encoder still scores correctly even if Plex ever reports the encoder name.
     'VIDEO_CODEC_SCORES': {'Unknown': 0,
                            'av1': 14000,
-                           'hevc': 12000, 'h265': 12000,
-                           'h264': 8000,
+                           'hevc': 12000, 'h265': 12000, 'x265': 12000,
+                           'h264': 8000, 'x264': 8000, 'avc': 8000,
                            'vp9': 6000,
                            'mpeg4': -3000,
                            'vc1': -2000,
@@ -28,41 +30,50 @@ base_config = {
                            'wmv2': -8000, 'wmv3': -8000,
                            'msmpeg4': -8000, 'msmpeg4v2': -8000, 'msmpeg4v3': -8000},
     'VIDEO_RESOLUTION_SCORES': {'Unknown': 0, '4k': 20000, '1080': 10000, '720': 5000, '480': 3000, 'sd': 1000},
-    # Modernised default — keep MKV, penalise legacy containers, prefer modern
-    # WEB-DL / BluRay encodes. Users with existing config.json keep their
-    # scores; only fresh installs pick up these defaults.
+    # Release SOURCE is a first-class scoring dimension. Plex exposes no source
+    # field, so it is parsed from the filename — but unlike FILENAME_SCORES it is
+    # a SINGLE value (the highest-quality source detected wins, never summed),
+    # giving a deterministic source tier. REMUX (8000) is bounded BELOW the
+    # resolution gap (4k-1080 = 10000) so a higher resolution still wins across
+    # tiers, while REMUX wins within its own resolution tier.
+    'SOURCE_SCORES': {
+        'remux': 8000,
+        'bluray': 3000,
+        'web-dl': 2000,
+        'webrip': 1000,
+        'hdtv': -3000,
+        'dvd': -3000,
+        'cam': -15000,
+    },
     # Default OFF: for modern storage-efficient libraries, raw file size
-    # rewards bloated encodes. Codec, resolution and filename signals are
-    # more reliable quality indicators. Turn on if you want size to break
-    # ties.
+    # rewards bloated encodes. Codec, resolution and source signals are more
+    # reliable quality indicators. Turn on if you want size to break ties.
     'SCORE_FILESIZE': False,
+    # FILENAME_SCORES are TIE-BREAKERS ONLY (container + edition tags). Source
+    # type (Remux/BluRay/WEB-DL/...) and resolution are NOT scored here — those
+    # come from SOURCE_SCORES and Plex's videoResolution respectively, so the
+    # filename can no longer dominate or double-count a real media attribute.
+    # The positive sum is clamped by FILENAME_SCORE_CAP; negative penalties for
+    # legacy containers are kept (a real quality signal) and are not capped.
     'FILENAME_SCORES': {
-        '*Remux*': 25000,
-        '*2160p*BluRay*': 20000,
-        '*4K*BluRay*': 20000,
-        '*1080p*BluRay*': 15000,
-        '*720p*BluRay*': 8000,
-        '*2160p*WEB-DL*': 14000,
-        '*4K*WEB-DL*': 14000,
-        '*1080p*WEB-DL*': 12000,
-        '*WEB-DL*': 6000,
-        '*WEBRip*': 4000,
-        '*HDTV*': -5000,
-        '*DVDRip*': -3000,
-        '*dvd*': -3000,
-        '*CAM*': -20000,
-        '*TS*': -5000,
-        '*REPACK*': 1500,
-        '*PROPER*': 1500,
+        '*REPACK*': 500,
+        '*PROPER*': 500,
         '*EXTENDED*': 500,
-        '*.mkv': 2000,
-        '*.mp4': 500,
+        '*.mkv': 800,
+        '*.mp4': 300,
         '*.avi': -10000,
         '*.ts': -5000,
         '*.vob': -10000,
         '*.wmv': -8000,
         '*.flv': -10000,
     },
+    # Upper bound on the POSITIVE sum of FILENAME_SCORES, so stacking several
+    # filename patterns cannot dominate a real media decision. 0 disables.
+    'FILENAME_SCORE_CAP': 2000,
+    # Multiplier applied to video bitrate (kbps). Low by design: bitrate
+    # correlates with BOTH quality and codec inefficiency, so a high value lets
+    # a bloated AVC outscore an efficient HEVC. Kept as a small tie-breaker.
+    'BITRATE_SCORE_WEIGHT': 0.1,
     'SKIP_LIST': [],
     # Lightweight metadata bonuses (read from Plex, no extra I/O).
     'HDR_SCORE': 3000,
