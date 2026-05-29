@@ -237,6 +237,19 @@ Without this setting, Plex will reject the HTTP DELETE requests plex_dupefinder 
 
 ---
 
+## Tests
+
+A minimal safety test suite covers the decision functions that can delete media — `get_score`, `select_keeper`, `check_file_exists`, `_quarantine_logical_path`, and `detect_inconsistencies`:
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -q
+```
+
+The tests stub Plex/`requests`/`tabulate`, so they run with only `pytest` installed — no Plex server or network required.
+
+---
+
 ## Documentation
 
 - [CONFIGURATION.md](CONFIGURATION.md) — all configuration options, defaults, and types

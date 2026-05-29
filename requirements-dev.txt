@@ -1,0 +1,4 @@
+# Development/test dependencies. Runtime deps are in requirements.txt.
+# The safety tests stub tabulate/plexapi/requests (see tests/conftest.py), so
+# pytest is the only thing needed to run them.
+pytest>=7.0

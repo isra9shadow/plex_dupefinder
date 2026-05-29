@@ -237,6 +237,19 @@ Sin este ajuste, Plex rechazará las peticiones HTTP DELETE que plex_dupefinder 
 
 ---
 
+## Tests
+
+Una batería mínima de tests de seguridad cubre las funciones que pueden borrar medios — `get_score`, `select_keeper`, `check_file_exists`, `_quarantine_logical_path` y `detect_inconsistencies`:
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -q
+```
+
+Los tests stubean Plex/`requests`/`tabulate`, así que se ejecutan con solo `pytest` instalado — sin servidor Plex ni red.
+
+---
+
 ## Documentación
 
 - [CONFIGURATION.es.md](CONFIGURATION.es.md) — todas las opciones de configuración, valores por defecto y tipos

@@ -66,17 +66,27 @@ default_plans_dir = os.path.join(SCRIPT_DIR, 'plans')
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 5
 
-_log_level = getattr(logging, str(cfg.get('LOG_LEVEL', 'INFO')).upper(), logging.INFO)
-_log_handler = RotatingFileHandler(
-    log_filename, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding='utf-8'
-)
-_log_handler.setFormatter(logging.Formatter(
-    fmt='[%(asctime)s] %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-))
-logging.basicConfig(level=_log_level, handlers=[_log_handler])
-logging.getLogger('urllib3.connectionpool').disabled = True
 log = logging.getLogger("Plex_Dupefinder")
+# NullHandler keeps importers (tests/tooling) quiet until setup_logging() runs.
+log.addHandler(logging.NullHandler())
+
+
+def setup_logging():
+    """Attach the size-rotated file handler for activity.log.
+
+    Called from the entrypoint (not at import) so importing this module — e.g.
+    from the test suite — has no side effects and creates no log file.
+    """
+    level = getattr(logging, str(cfg.get('LOG_LEVEL', 'INFO')).upper(), logging.INFO)
+    handler = RotatingFileHandler(
+        log_filename, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding='utf-8'
+    )
+    handler.setFormatter(logging.Formatter(
+        fmt='[%(asctime)s] %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    ))
+    logging.basicConfig(level=level, handlers=[handler])
+    logging.getLogger('urllib3.connectionpool').disabled = True
 
 REQUESTS_TIMEOUT = int(cfg.get('REQUESTS_TIMEOUT', 30))
 REDACTED_KEYS = ('PLEX_TOKEN', 'RADARR_API_KEY', 'SONARR_API_KEY')
@@ -166,15 +176,19 @@ def validate_config():
         sys.exit(2)
 
 
-validate_config()
+# Plex client — connected at runtime by connect_plex() from the entrypoint, so
+# importing this module never opens a network connection. None until then.
+plex = None
 
 
-try:
-    plex = PlexServer(cfg['PLEX_SERVER'], cfg['PLEX_TOKEN'])
-except Exception:
-    log.exception("Exception connecting to Plex server %r", cfg['PLEX_SERVER'])
-    print("Exception connecting to %s — see activity.log" % cfg['PLEX_SERVER'])
-    sys.exit(1)
+def connect_plex():
+    """Connect to the configured Plex server, or exit with a clear message."""
+    try:
+        return PlexServer(cfg['PLEX_SERVER'], cfg['PLEX_TOKEN'])
+    except Exception:
+        log.exception("Exception connecting to Plex server %r", cfg['PLEX_SERVER'])
+        print("Exception connecting to %s — see activity.log" % cfg['PLEX_SERVER'])
+        sys.exit(1)
 
 
 def validate_libraries(plex_server):
@@ -205,9 +219,6 @@ def validate_libraries(plex_server):
 
     log.info("Validated %d configured libraries against Plex: %s",
              len(configured), configured)
-
-
-validate_libraries(plex)
 
 
 ############################################################
@@ -1084,8 +1095,19 @@ def remove_item(part_info, reason, keeper_info=None,
             result['error'] = str(e)
             return result
         result['quarantine'] = qresult
-        if qresult['errors'] and not qresult['moved']:
-            result['error'] = 'quarantine failed for all files'
+        # Only remove the Plex entry if EVERY backing file was quarantined. On a
+        # partial failure (e.g. a multi-part item where one part moved and another
+        # did not), deleting the Plex entry would orphan the unmoved part on disk
+        # (no Plex reference, no sidecar mapping). Preserve the Plex entry so the
+        # library stays consistent; the already-moved parts remain restorable via
+        # their sidecars. No data is lost — only manual review is needed.
+        if qresult['errors']:
+            result['error'] = ('quarantine incomplete: %d moved, %d failed — '
+                               'Plex entry preserved, manual review needed'
+                               % (len(qresult['moved']), len(qresult['errors'])))
+            log.error("QUARANTINE INCOMPLETE media_id=%r moved=%d errors=%d — "
+                      "Plex entry preserved", media_id,
+                      len(qresult['moved']), len(qresult['errors']))
             return result
         ok, detail = remove_plex_metadata(show_key, media_id)
         result['plex_delete'] = {'success': ok, 'detail': detail}
@@ -1858,7 +1880,21 @@ def _revalidate_and_act_group(group):
 
         keeper_id = fresh_decision['keeper_id']
 
-        if not cfg.get('AUTO_DELETE'):
+        # Keeper-selection interactivity model:
+        #   * "acting" run (real moves/deletes) = not DRY_RUN and not AUDIT_MODE.
+        #   * When ACTING: prompt per group unless AUTO_DELETE is on.
+        #   * When NOT acting (DRY_RUN or AUDIT_MODE) nothing is ever mutated, so
+        #     the run is unattended UNLESS CONFIRM_BEFORE_ACTION=true, which opts
+        #     into assisted manual selection. This gives the two audit sub-modes:
+        #       AUDIT_MODE + CONFIRM_BEFORE_ACTION=false -> fully unattended (cron)
+        #       AUDIT_MODE + CONFIRM_BEFORE_ACTION=true  -> assisted manual review
+        #     No destructive action occurs in either case while not acting.
+        acting = (not cfg.get('DRY_RUN', True)) and not bool(cfg.get('AUDIT_MODE', False))
+        if acting:
+            interactive = not cfg.get('AUTO_DELETE', False)
+        else:
+            interactive = bool(cfg.get('CONFIRM_BEFORE_ACTION', True))
+        if interactive:
             chosen, skipped = _manual_choose_keeper(title, fresh_parts, keeper_id, fresh_decision['reason'])
             if skipped:
                 counters['groups_skipped_user'] = 1
@@ -1868,15 +1904,18 @@ def _revalidate_and_act_group(group):
                 log.info("PASS2 MANUAL_OVERRIDE group=%r recommended=%r chosen=%r",
                          title, keeper_id, chosen)
             keeper_id = chosen
+        else:
+            log.info("PASS2 AUTO_KEEPER group=%r keeper=%r (no prompt: acting=%s)",
+                     title, keeper_id, acting)
 
         keeper_info = fresh_parts[keeper_id]
 
         # Stability check: re-read every candidate's size after a brief wait.
         # Any size change → a file is actively being written (Tdarr transcode,
         # mid-copy, mid-import). Skip the whole group. Cheap last-mile safety.
-        will_act = not cfg.get('DRY_RUN', True)
+        # Only meaningful on an acting run (DRY_RUN/AUDIT never move files).
         stability_wait = float(cfg.get('STABILITY_CHECK_SECONDS', 0))
-        if will_act and stability_wait > 0:
+        if acting and stability_wait > 0:
             all_paths = []
             for pi in fresh_parts.values():
                 all_paths.extend(pi.get('file') or [])
@@ -1994,6 +2033,12 @@ if __name__ == "__main__":
 #                   GNU General Public License v3.0                     #
 #########################################################################
 """)
+    # Runtime setup (deferred from import so the module stays import-safe for tests).
+    setup_logging()
+    validate_config()
+    plex = connect_plex()
+    validate_libraries(plex)
+
     print("Initialized — run_id=%s" % run_id)
 
     audit_mode = bool(cfg.get('AUDIT_MODE', False))
@@ -2017,6 +2062,17 @@ if __name__ == "__main__":
         print("      %s" % cfg.get('QUARANTINE_DIR'))
     else:
         print("MODE: DIRECT DELETE — Plex will DELETE the file from disk (irreversible, no quarantine)")
+
+    # Effective keeper-selection behaviour, made explicit so an operator can see
+    # at a glance whether the run will ever block on input. Per-group prompts
+    # happen ONLY in interactive mode (AUTO_DELETE=false) AND when the run
+    # actually acts (not DRY_RUN). AUDIT_MODE forces DRY_RUN=True, so it — like
+    # any dry run — is fully unattended.
+    confirm_before_action = bool(cfg.get('CONFIRM_BEFORE_ACTION', True))
+    acting = (not dry_run) and (not audit_mode)
+    interactive_mode = (not auto_delete) if acting else confirm_before_action
+    print("INTERACTIVE_MODE=%s (per-group keeper prompts) | AUDIT_MODE=%s | CONFIRM_BEFORE_ACTION=%s"
+          % (interactive_mode, audit_mode, confirm_before_action))
     print("AUTO_DELETE=%s | MIN_FILE_AGE_HOURS=%s | MIN_SCORE_DIFFERENCE=%s | MAX_SIZE_RATIO=%s"
           % (auto_delete, cfg.get('MIN_FILE_AGE_HOURS'),
              cfg.get('MIN_SCORE_DIFFERENCE'), cfg.get('MAX_SIZE_RATIO')))

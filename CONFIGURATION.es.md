@@ -87,7 +87,9 @@ El script se distribuye con una postura de seguridad conservadora. Un `config.js
 **`AUDIT_MODE`**
 - Por defecto: `false`
 - Tipo: booleano
-- Descripción: Cuando es `true`, fuerza `DRY_RUN=true` en memoria en tiempo de ejecución (sin modificar `config.json`) incluso si `config.json` tiene `DRY_RUN=false`. Se ejecuta la canalización completa de dos pasadas incluyendo ficheros de plan y reportes JSON, pero no se toca ningún archivo y no se hacen llamadas a Plex. Úsalo para validar cambios de puntuación antes de pasar al modo real.
+- Descripción: Cuando es `true`, fuerza `DRY_RUN=true` en memoria en tiempo de ejecución (sin modificar `config.json`) incluso si `config.json` tiene `DRY_RUN=false`. Se ejecuta la canalización completa de dos pasadas incluyendo ficheros de plan y reportes JSON, pero no se toca ningún archivo y no se hacen llamadas a Plex. La interactividad la controla `CONFIRM_BEFORE_ACTION`:
+  - `AUDIT_MODE=true` + `CONFIRM_BEFORE_ACTION=false` → **totalmente desatendido**: el guardado recomendado se selecciona automáticamente para cada grupo, nunca se entra en `_manual_choose_keeper()`, y puede analizar miles de grupos sin bloquearse esperando entrada. **Esta es la configuración recomendada para cron.**
+  - `AUDIT_MODE=true` + `CONFIRM_BEFORE_ACTION=true` → **auditoría asistida**: se muestra la tabla de candidatos por grupo y eliges el guardado manualmente. En ningún caso se mueve ni borra archivo alguno.
 - Riesgo: 🟢 Seguro — por diseño no puede producir efectos secundarios.
 
 ---
@@ -119,7 +121,7 @@ El script se distribuye con una postura de seguridad conservadora. Un `config.js
 **`AUTO_DELETE`**
 - Por defecto: `false`
 - Tipo: booleano
-- Descripción: Cuando es `false` (por defecto), el script se detiene en cada grupo de duplicados y muestra una tabla de candidatos, el guardado recomendado y el desglose de puntuación. Puedes aceptar la recomendación, elegir un guardado diferente u omitir el grupo. Cuando es `true`, el script actúa según la recomendación de puntuación sin avisos por grupo. `CONFIRM_BEFORE_ACTION` proporciona un punto de control final incluso en modo automático.
+- Descripción: Gobierna los avisos por grupo **en una ejecución que actúa** (real: no `DRY_RUN`, no `AUDIT_MODE`). Cuando es `false` (por defecto) en una ejecución que actúa, el script se detiene en cada grupo y muestra una tabla de candidatos, el guardado recomendado y el desglose de puntuación; puedes aceptar la recomendación, elegir otro guardado u omitir el grupo. Cuando es `true`, actúa según la recomendación sin avisos por grupo (con `CONFIRM_BEFORE_ACTION` como punto de control final). En una ejecución que no actúa (`DRY_RUN`/`AUDIT_MODE`), `AUTO_DELETE` es irrelevante — allí los avisos los gobierna `CONFIRM_BEFORE_ACTION`.
 - Riesgo: 🟡 Ponlo en `true` solo tras validar la puntuación en tu biblioteca con ejecuciones en modo simulación.
 
 ---
@@ -127,8 +129,10 @@ El script se distribuye con una postura de seguridad conservadora. Un `config.js
 **`CONFIRM_BEFORE_ACTION`**
 - Por defecto: `true`
 - Tipo: booleano
-- Descripción: Cuando es `true` (y `AUTO_DELETE=true` y `DRY_RUN=false`), el script se detiene tras el descubrimiento de la PASADA 1, muestra un resumen de todas las acciones planificadas y requiere que escribas `YES` antes de que la PASADA 2 comience a actuar. Este es el último punto de control humano antes de que ocurra cualquier movimiento de archivos o borrado en Plex. Se ignora cuando `AUTO_DELETE=false` (el modo interactivo tiene sus propios avisos por grupo).
-- Riesgo: 🟡 Ponerlo en `false` elimina el punto de control final en modo automatizado.
+- Descripción: Tiene dos roles distintos y sin solapamiento según la ejecución:
+  - **Ejecución real con auto-borrado** (`DRY_RUN=false`, `AUTO_DELETE=true`): cuando es `true`, el script se detiene tras la PASADA 1, muestra un resumen de todas las acciones planificadas y requiere que escribas `YES` antes de que la PASADA 2 comience a actuar — el último punto de control humano antes de cualquier movimiento o borrado.
+  - **Ejecución que no actúa** (`DRY_RUN=true` o `AUDIT_MODE=true`): controla los avisos de selección de guardado por grupo. `true` = asistido (se muestra la tabla de candidatos por grupo); `false` = totalmente desatendido (guardado recomendado automático, sin avisos). **Ponlo en `false` para auditorías desatendidas/cron.**
+- Riesgo: 🟡 En una ejecución real con auto-borrado, ponerlo en `false` elimina el punto de control final. En una ejecución que no actúa solo afecta a si se te pregunta; en ningún caso ocurre acción destructiva.
 
 ---
 

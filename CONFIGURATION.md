@@ -87,7 +87,9 @@ The script ships with a conservative safety posture. A brand-new `config.json` w
 **`AUDIT_MODE`**
 - Default: `false`
 - Type: boolean
-- Description: When `true`, forces `DRY_RUN=true` in memory at runtime (without modifying `config.json`) even if `config.json` has `DRY_RUN=false`. The full two-pass pipeline runs including plan files and JSON reports, but no files are touched and no Plex calls are made. Use this to validate scoring changes before going live.
+- Description: When `true`, forces `DRY_RUN=true` in memory at runtime (without modifying `config.json`) even if `config.json` has `DRY_RUN=false`. The full two-pass pipeline runs including plan files and JSON reports, but no files are touched and no Plex calls are made. Interactivity is controlled by `CONFIRM_BEFORE_ACTION`:
+  - `AUDIT_MODE=true` + `CONFIRM_BEFORE_ACTION=false` → **fully unattended**: the scoring-recommended keeper is auto-selected for every group, `_manual_choose_keeper()` is never entered, and it can analyse thousands of duplicate groups without blocking on input. **This is the recommended cron configuration.**
+  - `AUDIT_MODE=true` + `CONFIRM_BEFORE_ACTION=true` → **assisted audit**: the candidate table is shown per group and you choose the keeper manually. No file is ever moved or deleted in either case.
 - Risk: 🟢 Safe — cannot produce side effects by design.
 
 ---
@@ -119,7 +121,7 @@ The script ships with a conservative safety posture. A brand-new `config.json` w
 **`AUTO_DELETE`**
 - Default: `false`
 - Type: boolean
-- Description: When `false` (default), the script pauses at each duplicate group and displays a table of candidates, the recommended keeper, and scoring breakdown. You can accept the recommendation, choose a different keeper, or skip the group. When `true`, the script acts on the scoring recommendation without per-group prompts. `CONFIRM_BEFORE_ACTION` provides a final checkpoint even in auto mode.
+- Description: Governs per-group prompts **on an acting run** (live: not `DRY_RUN`, not `AUDIT_MODE`). When `false` (default) on an acting run, the script pauses at each duplicate group and displays a table of candidates, the recommended keeper, and scoring breakdown; you can accept the recommendation, choose a different keeper, or skip the group. When `true`, it acts on the scoring recommendation without per-group prompts (with `CONFIRM_BEFORE_ACTION` as a final checkpoint). On a non-acting run (`DRY_RUN`/`AUDIT_MODE`) `AUTO_DELETE` is irrelevant — prompting there is governed by `CONFIRM_BEFORE_ACTION` instead.
 - Risk: 🟡 Set to `true` only after validating scoring on your library with dry runs.
 
 ---
@@ -127,8 +129,10 @@ The script ships with a conservative safety posture. A brand-new `config.json` w
 **`CONFIRM_BEFORE_ACTION`**
 - Default: `true`
 - Type: boolean
-- Description: When `true` (and `AUTO_DELETE=true` and `DRY_RUN=false`), the script pauses after PASS 1 discovery, shows a summary of all planned actions, and requires you to type `YES` before PASS 2 begins acting. This is the last human checkpoint before any file moves or Plex deletes occur. Ignored when `AUTO_DELETE=false` (interactive mode has its own per-group prompts).
-- Risk: 🟡 Setting to `false` removes the final checkpoint in automated mode.
+- Description: Has two distinct, non-overlapping roles depending on the run:
+  - **Acting + auto-delete run** (`DRY_RUN=false`, `AUTO_DELETE=true`): when `true`, the script pauses after PASS 1, shows a summary of all planned actions, and requires you to type `YES` before PASS 2 begins acting — the last human checkpoint before any file move or Plex delete.
+  - **Non-acting run** (`DRY_RUN=true` or `AUDIT_MODE=true`): controls per-group keeper prompts. `true` = assisted (candidate table shown per group); `false` = fully unattended (recommended keeper auto-selected, no prompts). **Set to `false` for unattended/cron audits.**
+- Risk: 🟡 In an acting auto-delete run, setting to `false` removes the final checkpoint. In a non-acting run it only affects whether you are prompted; no destructive action occurs either way.
 
 ---
 

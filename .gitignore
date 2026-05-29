@@ -16,15 +16,29 @@ __pycache__/
 *$py.class
 *.pyc
 
+# Test caches
+.pytest_cache/
+.coverage
+htmlcov/
+
 # logs
 *.log*
 
 # databases
 *.db
 
-# configs
+# configs — config.json is local (treat like .env); only the sample is versioned
 *.cfg
 /*.json
+!/config_sample.json
+
+# runtime artifacts written next to the script (logs are covered by *.log* above)
+/plans/
+/reports/
+/quarantine/
+dupefinder_plan_*.json
+dupefinder_report_*.json
+*.dupefinder_meta.json
 
 # generators
 *.bat

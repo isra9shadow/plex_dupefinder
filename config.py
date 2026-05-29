@@ -273,14 +273,24 @@ def upgrade_settings(defaults, currents):
 # LOAD CFG
 ############################################################
 
-# dump/load config
-if build_config():
-    print("Please edit the default configuration before running again!")
-    sys.exit(0)
-else:
+# config.json is loaded at import so existing tooling keeps working. The
+# behaviour depends on what is available so the module can also be imported
+# without side effects (e.g. by the test suite):
+#   * config.json present        -> load it and merge in any new defaults
+#                                    (exit after persisting if keys were added).
+#   * absent, interactive (TTY)  -> run the first-run setup wizard, then exit.
+#   * absent, non-interactive    -> fall back to built-in defaults, no prompt,
+#                                    no exit (tests / tooling / CI).
+if os.path.exists(config_path):
     tmp = load_config()
     upgraded, cfg = upgrade_settings(base_config, tmp)
     if upgraded:
         dump_config()
         print("New config options were added, adjust and restart!")
         sys.exit(0)
+elif sys.stdin.isatty():
+    build_config()
+    print("Please edit the default configuration before running again!")
+    sys.exit(0)
+else:
+    cfg = dict(base_config)
