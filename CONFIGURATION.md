@@ -77,7 +77,8 @@ The script ships with a conservative safety posture. A brand-new `config.json` w
   }
   ```
 - Failure mode prevented: When Plex paths differ from the script's view and no mapping is set, the source files appear missing — existence falls back to Plex flags, the age cooldown and stability checks are silently skipped (paths unreadable), and **quarantine fails for every item** (`QUARANTINE source missing` / `QUARANTINE INCOMPLETE moved=0 errors=1`).
-- Risk: 🟡 An incorrect mapping makes files appear missing → groups are skipped (no data loss, but nothing is actioned). Verify with a dry/audit run and check the resolved paths in the plan/report.
+- Risk: 🟡 An incorrect mapping makes files appear missing → groups are skipped (no data loss, but nothing is actioned).
+- Validate it without touching anything: `python3 plex_dupefinder.py --diagnose-paths` prints, for a sample of duplicate parts, the `PLEX PATH`, `REAL PATH`, `PATH MAPPING USED` and `SOURCE EXISTS`. If `PATH MAPPING USED: NONE` or `SOURCE EXISTS=False`, the prefix does not match what Plex reports (check case and trailing slash).
 
 ---
 

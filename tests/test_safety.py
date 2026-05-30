@@ -417,9 +417,20 @@ def test_quarantine_resolves_logical_path_via_mappings(cfg, tmp_path, capsys):
     assert len(res['moved']) == 1
     assert not os.path.exists(real_file)          # moved off the real path
     out = capsys.readouterr().out
-    assert 'QUARANTINE RESOLVE' in out
-    assert 'original_path=/tv/Show/Season 01/ep.mkv' in out
-    assert 'source_exists=True' in out
+    assert 'PLEX PATH: /tv/Show/Season 01/ep.mkv' in out
+    assert 'PATH MAPPING USED: /tv/' in out
+    assert 'SOURCE EXISTS=True' in out
+
+
+def test_resolve_with_mapping_returns_matched_prefix(cfg):
+    cfg['PATH_MAPPINGS'] = {'/tv/': '/mnt/user/media/series TV/',
+                            '/movies/': '/mnt/user/media/peliculas/'}
+    assert pd._resolve_with_mapping('/movies/Film.mkv') == \
+        ('/mnt/user/media/peliculas/Film.mkv', '/movies/')
+    assert pd._resolve_with_mapping('/tv/Show/ep.mkv') == \
+        ('/mnt/user/media/series TV/Show/ep.mkv', '/tv/')
+    # No matching prefix -> path unchanged, mapping None (the failure symptom).
+    assert pd._resolve_with_mapping('/anime/X.mkv') == ('/anime/X.mkv', None)
 
 
 # --------------------------------------------------------------------------- #

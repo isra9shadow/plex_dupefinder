@@ -77,7 +77,8 @@ El script se distribuye con una postura de seguridad conservadora. Un `config.js
   }
   ```
 - Modo de fallo evitado: Cuando las rutas de Plex difieren de la vista del script y no hay mapeo, los ficheros de origen parecen ausentes — la existencia cae a los flags de Plex, el enfriamiento por antigüedad y la comprobación de estabilidad se omiten en silencio (rutas ilegibles), y **la cuarentena falla en todos los elementos** (`QUARANTINE source missing` / `QUARANTINE INCOMPLETE moved=0 errors=1`).
-- Riesgo: 🟡 Un mapeo incorrecto hace que los ficheros parezcan ausentes → los grupos se omiten (sin pérdida de datos, pero no se acciona nada). Verifícalo con un run dry/audit y revisa las rutas resueltas en el plan/reporte.
+- Riesgo: 🟡 Un mapeo incorrecto hace que los ficheros parezcan ausentes → los grupos se omiten (sin pérdida de datos, pero no se acciona nada).
+- Valídalo sin tocar nada: `python3 plex_dupefinder.py --diagnose-paths` imprime, para una muestra de partes duplicadas, `PLEX PATH`, `REAL PATH`, `PATH MAPPING USED` y `SOURCE EXISTS`. Si sale `PATH MAPPING USED: NONE` o `SOURCE EXISTS=False`, el prefijo no casa con lo que reporta Plex (revisa mayúsculas y la barra final).
 
 ---
 

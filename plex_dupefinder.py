@@ -271,6 +271,27 @@ def kbps_to_string(size_kbps):
 ############################################################
 
 
+def _resolve_with_mapping(plex_path):
+    """Return ``(resolved_path, matched_prefix or None)``.
+
+    ``PATH_MAPPINGS`` is a ``{plex_prefix: filesystem_prefix}`` dict; the longest
+    matching prefix wins. When no prefix matches, the path is returned unchanged
+    and the matched prefix is ``None`` — which is exactly the symptom to look for
+    when PATH_MAPPINGS is empty or its keys do not match what Plex reports.
+    """
+    if not plex_path:
+        return plex_path, None
+    mappings = cfg.get('PATH_MAPPINGS') or {}
+    best_prefix = None
+    for plex_prefix in mappings:
+        if plex_path.startswith(plex_prefix) and (
+                best_prefix is None or len(plex_prefix) > len(best_prefix)):
+            best_prefix = plex_prefix
+    if best_prefix is None:
+        return plex_path, None
+    return mappings[best_prefix] + plex_path[len(best_prefix):], best_prefix
+
+
 def resolve_fs_path(plex_path):
     """Translate a Plex *logical* library path into the real filesystem path.
 
@@ -279,24 +300,9 @@ def resolve_fs_path(plex_path):
     files on disk (e.g. ``/mnt/user/media/series TV/...`` on Unraid). Without
     translation every filesystem operation — existence, age cooldown, stability
     check, partial hashing and the quarantine move — silently operates on a
-    non-existent path and is bypassed or fails.
-
-    ``PATH_MAPPINGS`` is a ``{plex_prefix: filesystem_prefix}`` dict. The longest
-    matching prefix wins. Returns the path unchanged when no mapping matches, so
-    deployments where the Plex paths already are the real paths keep working with
-    no configuration.
+    non-existent path and is bypassed or fails. See ``PATH_MAPPINGS``.
     """
-    if not plex_path:
-        return plex_path
-    mappings = cfg.get('PATH_MAPPINGS') or {}
-    best_prefix = None
-    for plex_prefix in mappings:
-        if plex_path.startswith(plex_prefix) and (
-                best_prefix is None or len(plex_prefix) > len(best_prefix)):
-            best_prefix = plex_prefix
-    if best_prefix is None:
-        return plex_path
-    return mappings[best_prefix] + plex_path[len(best_prefix):]
+    return _resolve_with_mapping(plex_path)[0]
 
 
 def check_file_exists(file_path, plex_exists=None, plex_accessible=None):
@@ -1081,14 +1087,14 @@ def quarantine_files(part_info, keeper_info=None, reason=None,
         # the get_media_info boundary, but guarantees the move ALWAYS operates on
         # the real filesystem path even if the incoming path is still a Plex
         # logical path. A no-op when PATH_MAPPINGS is empty / no prefix matches.
-        src = resolve_fs_path(incoming)
+        src, mapping_used = _resolve_with_mapping(incoming)
         src_exists = os.path.exists(src)
 
         # Path-resolution diagnostic, printed before every quarantine move.
-        print("\nQUARANTINE RESOLVE\noriginal_path=%s\nresolved_path=%s\nsource_exists=%s"
-              % (incoming, src, src_exists))
-        log.info("QUARANTINE resolve media_id=%r original_path=%r resolved_path=%r source_exists=%s",
-                 media_id, incoming, src, src_exists)
+        print("\nPATH RESOLUTION\nPLEX PATH: %s\nREAL PATH: %s\nPATH MAPPING USED: %s\nSOURCE EXISTS=%s"
+              % (incoming, src, mapping_used or 'NONE', src_exists))
+        log.info("QUARANTINE resolve media_id=%r plex=%r real=%r mapping=%r source_exists=%s",
+                 media_id, incoming, src, mapping_used, src_exists)
 
         # Destination is computed from the RESOLVED source (string ops only) so
         # it is always available in the failure report, even if the source is missing.
@@ -2152,6 +2158,50 @@ def revalidate_and_act(groups):
     return totals
 
 
+def diagnose_paths(per_section=8):
+    """`--diagnose-paths`: print Plex path -> resolved path -> exists for a
+    sample of duplicate media parts, taking NO action. For validating
+    PATH_MAPPINGS before running a real quarantine.
+    """
+    print("\n" + "=" * 60)
+    print("PATH RESOLUTION DIAGNOSTIC (no actions taken)")
+    print("=" * 60)
+    print("PATH_MAPPINGS loaded from config: %s" % (cfg.get('PATH_MAPPINGS') or {}))
+    if not (cfg.get('PATH_MAPPINGS') or {}):
+        print(">>> PATH_MAPPINGS is EMPTY — Plex logical paths will NOT be translated.")
+    total = ok = 0
+    for section in cfg.get('PLEX_LIBRARIES') or []:
+        print("\n----- library: %s -----" % section)
+        try:
+            dupes = get_dupes(section)
+        except Exception as e:
+            print("  could not fetch duplicates: %s" % e)
+            continue
+        shown = 0
+        for item in dupes:
+            for media in getattr(item, 'media', None) or []:
+                for part in getattr(media, 'parts', None) or []:
+                    plex_path = part.file
+                    real_path, mapping_used = _resolve_with_mapping(plex_path)
+                    exists = bool(real_path and os.path.exists(real_path))
+                    total += 1
+                    ok += int(exists)
+                    print("\nPLEX PATH: %s\nREAL PATH: %s\nPATH MAPPING USED: %s\nSOURCE EXISTS=%s"
+                          % (plex_path, real_path, mapping_used or 'NONE', exists))
+                    shown += 1
+                    if shown >= per_section:
+                        break
+                if shown >= per_section:
+                    break
+            if shown >= per_section:
+                break
+    print("\n" + "=" * 60)
+    print("SUMMARY: %d/%d sampled paths resolve to an existing file" % (ok, total))
+    if total and ok == 0:
+        print(">>> NONE resolved. Fix PATH_MAPPINGS so the keys match the PLEX PATH prefixes above.")
+    print("=" * 60)
+
+
 ############################################################
 # MAIN
 ############################################################
@@ -2179,6 +2229,11 @@ if __name__ == "__main__":
     validate_config()
     plex = connect_plex()
     validate_libraries(plex)
+
+    # Path-resolution diagnostic: validate PATH_MAPPINGS without touching anything.
+    if '--diagnose-paths' in sys.argv:
+        diagnose_paths()
+        sys.exit(0)
 
     print("Initialized — run_id=%s" % run_id)
 
