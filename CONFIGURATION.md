@@ -66,6 +66,21 @@ The script ships with a conservative safety posture. A brand-new `config.json` w
 
 ---
 
+**`PATH_MAPPINGS`**
+- Default: `{}`
+- Type: object (`plex_prefix` → `filesystem_prefix`)
+- Description: Translates Plex's **logical** library paths to the **real filesystem** paths this script sees on disk. Plex often reports a path like `/tv/Show/...` or `/movies/Movie/...` while the file actually lives at `/mnt/user/media/series TV/Show/...`. The mapping is applied (longest prefix wins) the moment a part's path is read, so **every** filesystem operation — existence check, age cooldown, stability check, partial hashing, the quarantine move, and the sidecar restore command — uses the real path. Empty means no translation (paths are used exactly as Plex reports them, correct when the script runs in the same mount namespace as Plex). Example:
+  ```json
+  "PATH_MAPPINGS": {
+    "/tv/": "/mnt/user/media/series TV/",
+    "/movies/": "/mnt/user/media/movies/"
+  }
+  ```
+- Failure mode prevented: When Plex paths differ from the script's view and no mapping is set, the source files appear missing — existence falls back to Plex flags, the age cooldown and stability checks are silently skipped (paths unreadable), and **quarantine fails for every item** (`QUARANTINE source missing` / `QUARANTINE INCOMPLETE moved=0 errors=1`).
+- Risk: 🟡 An incorrect mapping makes files appear missing → groups are skipped (no data loss, but nothing is actioned). Verify with a dry/audit run and check the resolved paths in the plan/report.
+
+---
+
 **`REQUESTS_TIMEOUT`**
 - Default: `30`
 - Type: integer (seconds)

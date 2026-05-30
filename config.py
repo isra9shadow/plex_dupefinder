@@ -13,6 +13,16 @@ base_config = {
     'PLEX_SERVER': 'https://plex.your-server.com',
     'PLEX_TOKEN': '',
     'PLEX_LIBRARIES': {},
+    # Translate Plex *logical* library paths to the real filesystem paths this
+    # script sees on disk. Plex may report e.g. "/tv/..." while the file lives at
+    # "/mnt/user/media/series TV/...". {plex_prefix: filesystem_prefix}; longest
+    # prefix wins. Empty = no translation (paths used as-is). Required when the
+    # script does not see files at the exact paths Plex reports, otherwise
+    # existence/cooldown/stability/quarantine all operate on non-existent paths.
+    # Example:
+    #   "PATH_MAPPINGS": {"/tv/": "/mnt/user/media/series TV/",
+    #                     "/movies/": "/mnt/user/media/movies/"}
+    'PATH_MAPPINGS': {},
     'AUDIO_CODEC_SCORES': {'Unknown': 0, 'wmapro': 200, 'mp2': 500, 'mp3': 1000, 'ac3': 1000, 'dca': 2000, 'pcm': 2500,
                            'flac': 2500, 'dca-ma': 4000, 'truehd': 4500, 'aac': 1000, 'eac3': 1250, 'opus': 1500},
     # Modernised: HEVC/AV1 are the preferred archive codecs in 2024+; H.264 is

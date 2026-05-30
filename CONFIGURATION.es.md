@@ -66,6 +66,21 @@ El script se distribuye con una postura de seguridad conservadora. Un `config.js
 
 ---
 
+**`PATH_MAPPINGS`**
+- Por defecto: `{}`
+- Tipo: objeto (`prefijo_plex` → `prefijo_filesystem`)
+- Descripción: Traduce las rutas **lógicas** de las bibliotecas de Plex a las rutas **reales del filesystem** que este script ve en disco. Plex suele reportar una ruta como `/tv/Serie/...` o `/movies/Peli/...` mientras que el fichero vive realmente en `/mnt/user/media/series TV/Serie/...`. El mapeo se aplica (gana el prefijo más largo) en cuanto se lee la ruta de una parte, de modo que **todas** las operaciones de filesystem —comprobación de existencia, enfriamiento por antigüedad, comprobación de estabilidad, hashing parcial, el movimiento a cuarentena y el comando de restauración del sidecar— usan la ruta real. Vacío significa sin traducción (las rutas se usan tal cual las reporta Plex, correcto cuando el script corre en el mismo espacio de montaje que Plex). Ejemplo:
+  ```json
+  "PATH_MAPPINGS": {
+    "/tv/": "/mnt/user/media/series TV/",
+    "/movies/": "/mnt/user/media/movies/"
+  }
+  ```
+- Modo de fallo evitado: Cuando las rutas de Plex difieren de la vista del script y no hay mapeo, los ficheros de origen parecen ausentes — la existencia cae a los flags de Plex, el enfriamiento por antigüedad y la comprobación de estabilidad se omiten en silencio (rutas ilegibles), y **la cuarentena falla en todos los elementos** (`QUARANTINE source missing` / `QUARANTINE INCOMPLETE moved=0 errors=1`).
+- Riesgo: 🟡 Un mapeo incorrecto hace que los ficheros parezcan ausentes → los grupos se omiten (sin pérdida de datos, pero no se acciona nada). Verifícalo con un run dry/audit y revisa las rutas resueltas en el plan/reporte.
+
+---
+
 **`REQUESTS_TIMEOUT`**
 - Por defecto: `30`
 - Tipo: entero (segundos)

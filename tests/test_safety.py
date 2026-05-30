@@ -329,6 +329,37 @@ def test_quarantine_path_never_escapes_with_traversal():
 
 
 # --------------------------------------------------------------------------- #
+# resolve_fs_path (Plex logical path -> real filesystem path)
+# --------------------------------------------------------------------------- #
+
+def test_resolve_fs_path_passthrough_without_mappings(cfg):
+    cfg['PATH_MAPPINGS'] = {}
+    assert pd.resolve_fs_path('/tv/Show/ep.mkv') == '/tv/Show/ep.mkv'
+
+
+def test_resolve_fs_path_maps_the_reported_unraid_case(cfg):
+    cfg['PATH_MAPPINGS'] = {'/tv/': '/mnt/user/media/series TV/'}
+    assert pd.resolve_fs_path('/tv/The Walking Dead/Season 10/ep.mkv') == \
+        '/mnt/user/media/series TV/The Walking Dead/Season 10/ep.mkv'
+
+
+def test_resolve_fs_path_longest_prefix_wins(cfg):
+    cfg['PATH_MAPPINGS'] = {'/media/': '/a/', '/media/tv/': '/b/'}
+    assert pd.resolve_fs_path('/media/tv/Show/ep.mkv') == '/b/Show/ep.mkv'
+
+
+def test_resolve_fs_path_no_match_passthrough(cfg):
+    cfg['PATH_MAPPINGS'] = {'/movies/': '/x/'}
+    assert pd.resolve_fs_path('/tv/Show/ep.mkv') == '/tv/Show/ep.mkv'
+
+
+def test_resolve_fs_path_empty_or_none(cfg):
+    cfg['PATH_MAPPINGS'] = {'/tv/': '/x/'}
+    assert pd.resolve_fs_path('') == ''
+    assert pd.resolve_fs_path(None) is None
+
+
+# --------------------------------------------------------------------------- #
 # detect_inconsistencies
 # --------------------------------------------------------------------------- #
 

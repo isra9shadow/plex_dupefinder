@@ -269,6 +269,34 @@ def kbps_to_string(size_kbps):
 ############################################################
 
 
+def resolve_fs_path(plex_path):
+    """Translate a Plex *logical* library path into the real filesystem path.
+
+    Plex stores paths as configured inside Plex (e.g. ``/tv/...``,
+    ``/movies/...``), which frequently differ from where this script sees the
+    files on disk (e.g. ``/mnt/user/media/series TV/...`` on Unraid). Without
+    translation every filesystem operation — existence, age cooldown, stability
+    check, partial hashing and the quarantine move — silently operates on a
+    non-existent path and is bypassed or fails.
+
+    ``PATH_MAPPINGS`` is a ``{plex_prefix: filesystem_prefix}`` dict. The longest
+    matching prefix wins. Returns the path unchanged when no mapping matches, so
+    deployments where the Plex paths already are the real paths keep working with
+    no configuration.
+    """
+    if not plex_path:
+        return plex_path
+    mappings = cfg.get('PATH_MAPPINGS') or {}
+    best_prefix = None
+    for plex_prefix in mappings:
+        if plex_path.startswith(plex_prefix) and (
+                best_prefix is None or len(plex_prefix) > len(best_prefix)):
+            best_prefix = plex_prefix
+    if best_prefix is None:
+        return plex_path
+    return mappings[best_prefix] + plex_path[len(best_prefix):]
+
+
 def check_file_exists(file_path, plex_exists=None, plex_accessible=None):
     """
     Determine whether a media part is actually present.
@@ -841,23 +869,33 @@ def get_media_info(item, compute_hashes=False):
     info['parts_existence'] = []
     all_parts_exist = True
     for part in item.parts:
-        info['file'].append(part.file)
+        # Plex reports a logical path; resolve it to the real filesystem path
+        # once, here, so every downstream filesystem operation (existence, age
+        # cooldown, stability check, hashing, quarantine move, sidecar restore)
+        # works on the actual file. No-op when PATH_MAPPINGS is empty / no match.
+        plex_path = part.file
+        fs_path = resolve_fs_path(plex_path)
+        if fs_path != plex_path:
+            log.debug("PATH_MAP resolved %r -> %r", plex_path, fs_path)
+        info['file'].append(fs_path)
         info['file_size'] += part.size if part.size else 0
 
         plex_exists = getattr(part, 'exists', None)
         plex_accessible = getattr(part, 'accessible', None)
-        existence = check_file_exists(part.file, plex_exists, plex_accessible)
-        existence['file'] = part.file
-        existence['age_hours'] = get_file_age_hours(part.file)
+        existence = check_file_exists(fs_path, plex_exists, plex_accessible)
+        existence['file'] = fs_path
+        existence['plex_path'] = plex_path if fs_path != plex_path else None
+        existence['age_hours'] = get_file_age_hours(fs_path)
         if compute_hashes and cfg.get('PARTIAL_HASH_ENABLED'):
-            existence['partial_hash'] = compute_partial_hashes(part.file)
+            existence['partial_hash'] = compute_partial_hashes(fs_path)
         info['parts_existence'].append(existence)
         if not existence['exists']:
             all_parts_exist = False
-            log.warning("Part not present: %r — %s", part.file, existence['reason'])
+            log.warning("Part not present: fs=%r plex=%r — %s",
+                        fs_path, plex_path, existence['reason'])
         else:
             log.debug("Part present: %r — %s (age=%sh)",
-                      part.file, existence['reason'], existence['age_hours'])
+                      fs_path, existence['reason'], existence['age_hours'])
 
     info['exists'] = all_parts_exist
     return info
@@ -1028,9 +1066,16 @@ def quarantine_files(part_info, keeper_info=None, reason=None,
 
     moved = []
     errors = []
+    # part_info['file'] already holds real filesystem paths (resolved at the
+    # get_media_info boundary). We still log them explicitly so an operator can
+    # see exactly which source/destination paths the move used.
     for src in part_info['file']:
+        dest = None
         try:
             if not os.path.exists(src):
+                log.error("QUARANTINE source missing on disk: src=%r media_id=%r "
+                          "(check PATH_MAPPINGS if Plex uses logical paths)",
+                          src, part_info.get('id'))
                 errors.append({'file': src, 'error': 'source missing'})
                 continue
 
@@ -1061,10 +1106,12 @@ def quarantine_files(part_info, keeper_info=None, reason=None,
                 base, ext = os.path.splitext(dest)
                 dest = '%s__%d%s' % (base, int(time.time()), ext)
 
+            log.info("QUARANTINE move src=%r dest=%r media_id=%r",
+                     src, dest, part_info.get('id'))
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.move(src, dest)
             moved.append(dest)
-            log.info("QUARANTINE moved src=%r dest=%r media_id=%r",
+            log.info("QUARANTINE moved OK src=%r dest=%r media_id=%r",
                      src, dest, part_info.get('id'))
 
             _write_quarantine_sidecar(
@@ -1074,8 +1121,9 @@ def quarantine_files(part_info, keeper_info=None, reason=None,
             )
 
         except (OSError, shutil.Error) as e:
-            log.exception("Failed to quarantine %r", src)
-            errors.append({'file': src, 'error': str(e)})
+            log.exception("QUARANTINE failed src=%r dest=%r media_id=%r: %s",
+                          src, dest, part_info.get('id'), e)
+            errors.append({'file': src, 'dest': dest, 'error': str(e)})
 
     return {'moved': moved, 'errors': errors}
 
