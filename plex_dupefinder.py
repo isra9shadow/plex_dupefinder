@@ -1030,7 +1030,11 @@ def _write_quarantine_sidecar(original_path, quarantine_path, part_info,
         log.info("QUARANTINE sidecar written: %r", sidecar_path)
     except OSError as e:
         # Sidecar failure is non-fatal — the file was already moved; warn only.
+        # But surface it: the quarantined file now has NO restore_command.
         log.warning("QUARANTINE sidecar write failed %r: %s", sidecar_path, e)
+        print("\n[!] QUARANTINE SIDECAR FAILED\nmedia_id=%s\npath=%s\nreason=%s\n"
+              "    (file is quarantined but has NO restore_command — note its path)"
+              % (part_info.get('id'), sidecar_path, e))
 
 
 def quarantine_files(part_info, keeper_info=None, reason=None,
@@ -1160,14 +1164,18 @@ def remove_plex_metadata(show_key, media_id):
         )
     except requests.RequestException as e:
         log.exception("DELETE request error for media %r", media_id)
+        print("\nPLEX DELETE FAILED\nmedia_id=%s\nreason=request_error: %s" % (media_id, e))
         return False, "request_error: %s" % e
 
     if response.status_code in (200, 204):
         log.info("Plex metadata deleted for media %r", media_id)
+        print("\nPLEX DELETE SUCCESS\nmedia_id=%s" % media_id)
         return True, "http_%d" % response.status_code
 
     log.error("Plex DELETE failed media=%r status=%s body=%s",
               media_id, response.status_code, response.text[:200])
+    print("\nPLEX DELETE FAILED\nmedia_id=%s\nreason=http_%d: %s"
+          % (media_id, response.status_code, response.text[:200]))
     return False, "http_%d: %s" % (response.status_code, response.text[:200])
 
 
@@ -1232,12 +1240,15 @@ def remove_item(part_info, reason, keeper_info=None,
         # library stays consistent; the already-moved parts remain restorable via
         # their sidecars. No data is lost — only manual review is needed.
         if qresult['errors']:
+            n_moved, n_err = len(qresult['moved']), len(qresult['errors'])
             result['error'] = ('quarantine incomplete: %d moved, %d failed — '
                                'Plex entry preserved, manual review needed'
-                               % (len(qresult['moved']), len(qresult['errors'])))
+                               % (n_moved, n_err))
             log.error("QUARANTINE INCOMPLETE media_id=%r moved=%d errors=%d — "
-                      "Plex entry preserved", media_id,
-                      len(qresult['moved']), len(qresult['errors']))
+                      "Plex entry preserved", media_id, n_moved, n_err)
+            print("\nQUARANTINE INCOMPLETE\nmedia_id=%s\nmoved=%d failed=%d\n"
+                  "reason=not all backing files moved; Plex entry PRESERVED (no Plex delete)"
+                  % (media_id, n_moved, n_err))
             return result
         ok, detail = remove_plex_metadata(show_key, media_id)
         result['plex_delete'] = {'success': ok, 'detail': detail}
