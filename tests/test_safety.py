@@ -400,6 +400,28 @@ def test_quarantine_success_moves_file_and_reports(cfg, tmp_path, capsys):
     assert 'elapsed_ms=' in out
 
 
+def test_quarantine_resolves_logical_path_via_mappings(cfg, tmp_path, capsys):
+    # quarantine_files must resolve a raw Plex logical path even if it arrives
+    # unresolved, and print the original/resolved diagnostic.
+    real_root = str(tmp_path / 'mnt' / 'series TV').replace(os.sep, '/')
+    os.makedirs(real_root + '/Show/Season 01')
+    real_file = real_root + '/Show/Season 01/ep.mkv'
+    with open(real_file, 'wb') as fh:
+        fh.write(b'x' * 1024)
+    cfg['QUARANTINE_DIR'] = str(tmp_path / 'q')
+    os.makedirs(cfg['QUARANTINE_DIR'])
+    cfg['PATH_MAPPINGS'] = {'/tv/': real_root + '/'}
+    res = pd.quarantine_files({'id': 9, 'file': ['/tv/Show/Season 01/ep.mkv']},
+                              keeper_info={'file': ['/k'], 'score': 1},
+                              title='Show', library_name='Series')
+    assert len(res['moved']) == 1
+    assert not os.path.exists(real_file)          # moved off the real path
+    out = capsys.readouterr().out
+    assert 'QUARANTINE RESOLVE' in out
+    assert 'original_path=/tv/Show/Season 01/ep.mkv' in out
+    assert 'source_exists=True' in out
+
+
 # --------------------------------------------------------------------------- #
 # detect_inconsistencies
 # --------------------------------------------------------------------------- #

@@ -1070,12 +1070,24 @@ def quarantine_files(part_info, keeper_info=None, reason=None,
     errors = []
     media_id = part_info.get('id')
     debug = log.isEnabledFor(logging.DEBUG)
-    # part_info['file'] already holds real filesystem paths (resolved at the
-    # get_media_info boundary). Every move prints its outcome to the console so
-    # an operator can diagnose failures live, without opening activity.log.
-    for src in part_info['file']:
-        # Destination is computed first (string ops only) so it is always
-        # available in the failure report, even if the source is missing.
+    # Every move prints its outcome to the console so an operator can diagnose
+    # failures live, without opening activity.log.
+    for incoming in part_info['file']:
+        # Resolve the path here too — idempotent if it was already resolved at
+        # the get_media_info boundary, but guarantees the move ALWAYS operates on
+        # the real filesystem path even if the incoming path is still a Plex
+        # logical path. A no-op when PATH_MAPPINGS is empty / no prefix matches.
+        src = resolve_fs_path(incoming)
+        src_exists = os.path.exists(src)
+
+        # Path-resolution diagnostic, printed before every quarantine move.
+        print("\nQUARANTINE RESOLVE\noriginal_path=%s\nresolved_path=%s\nsource_exists=%s"
+              % (incoming, src, src_exists))
+        log.info("QUARANTINE resolve media_id=%r original_path=%r resolved_path=%r source_exists=%s",
+                 media_id, incoming, src, src_exists)
+
+        # Destination is computed from the RESOLVED source (string ops only) so
+        # it is always available in the failure report, even if the source is missing.
         logical_rel = _quarantine_logical_path(src, title or '')
         logical_parts = logical_rel.replace('\\', '/').split('/')
         dest = os.path.join(quarantine_root, logical_rel)
@@ -1090,8 +1102,6 @@ def quarantine_files(part_info, keeper_info=None, reason=None,
         if os.path.exists(dest):
             base, ext = os.path.splitext(dest)
             dest = '%s__%d%s' % (base, int(time.time()), ext)
-
-        src_exists = os.path.exists(src)
         try:
             if not src_exists:
                 # Surface as a real FileNotFoundError so the failure report is
