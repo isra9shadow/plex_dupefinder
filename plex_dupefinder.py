@@ -42,7 +42,7 @@ from logging.handlers import RotatingFileHandler
 
 from tabulate import tabulate
 
-from config import cfg
+from config import cfg, config_path
 
 try:
     from urlparse import urljoin
@@ -2166,6 +2166,7 @@ def diagnose_paths(per_section=8):
     print("\n" + "=" * 60)
     print("PATH RESOLUTION DIAGNOSTIC (no actions taken)")
     print("=" * 60)
+    print("config.json in use: %s" % config_path)
     print("PATH_MAPPINGS loaded from config: %s" % (cfg.get('PATH_MAPPINGS') or {}))
     if not (cfg.get('PATH_MAPPINGS') or {}):
         print(">>> PATH_MAPPINGS is EMPTY — Plex logical paths will NOT be translated.")
@@ -2277,6 +2278,9 @@ if __name__ == "__main__":
              cfg.get('PARTIAL_HASH_ENABLED'), cfg.get('REQUIRE_LOCAL_FS_ACCESS')))
     print("PRE_ANALYZE_DUPLICATES=%s | ANALYZE_TIMEOUT_SECONDS=%s"
           % (cfg.get('PRE_ANALYZE_DUPLICATES'), cfg.get('ANALYZE_TIMEOUT_SECONDS')))
+    _pm_keys = list((cfg.get('PATH_MAPPINGS') or {}).keys())
+    print("config.json in use : %s" % config_path)
+    print("PATH_MAPPINGS keys : %s" % (_pm_keys or 'NONE (Plex paths used as-is)'))
     print("=" * 60)
 
     if not dry_run and not quarantine_mode and auto_delete:
