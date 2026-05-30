@@ -360,6 +360,47 @@ def test_resolve_fs_path_empty_or_none(cfg):
 
 
 # --------------------------------------------------------------------------- #
+# quarantine_files observability (console output + error detail)
+# --------------------------------------------------------------------------- #
+
+def test_quarantine_failure_reports_full_detail(cfg, tmp_path, capsys):
+    cfg['QUARANTINE_DIR'] = str(tmp_path / 'q')
+    os.makedirs(cfg['QUARANTINE_DIR'])
+    missing = str(tmp_path / 'nope' / 'Movie' / 'ep.mkv')   # source does not exist
+    res = pd.quarantine_files({'id': 1232465, 'file': [missing]},
+                              title='Movie', library_name='Movies')
+    assert res['moved'] == []
+    err = res['errors'][0]
+    assert err['exception_type'] == 'FileNotFoundError'
+    assert err['source_exists'] is False
+    out = capsys.readouterr().out
+    assert 'QUARANTINE FAILED' in out
+    assert 'media_id=1232465' in out
+    assert 'exception_type=FileNotFoundError' in out
+    assert 'source_exists=False' in out
+    assert 'destination_parent_exists=' in out
+
+
+def test_quarantine_success_moves_file_and_reports(cfg, tmp_path, capsys):
+    cfg['QUARANTINE_DIR'] = str(tmp_path / 'q')
+    os.makedirs(cfg['QUARANTINE_DIR'])
+    src_dir = tmp_path / 'media' / 'Movie'
+    src_dir.mkdir(parents=True)
+    src = src_dir / 'Movie.mkv'
+    src.write_bytes(b'x' * 2048)
+    res = pd.quarantine_files({'id': 7, 'file': [str(src)]},
+                              keeper_info={'file': ['/k.mkv'], 'score': 1},
+                              title='Movie', library_name='Movies')
+    assert len(res['moved']) == 1
+    assert os.path.isfile(res['moved'][0])    # the file is physically in QUARANTINE_DIR
+    assert not src.exists()                   # source was moved away
+    out = capsys.readouterr().out
+    assert 'QUARANTINED' in out
+    assert 'media_id=7' in out
+    assert 'elapsed_ms=' in out
+
+
+# --------------------------------------------------------------------------- #
 # detect_inconsistencies
 # --------------------------------------------------------------------------- #
 

@@ -24,6 +24,7 @@ Modes:
 Filesystem is authoritative; Plex metadata is informational.
 Prefer false negatives over false positives.
 """
+import errno
 import hashlib
 import json
 import logging
@@ -33,6 +34,7 @@ import shlex
 import shutil
 import sys
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -1066,53 +1068,49 @@ def quarantine_files(part_info, keeper_info=None, reason=None,
 
     moved = []
     errors = []
+    media_id = part_info.get('id')
+    debug = log.isEnabledFor(logging.DEBUG)
     # part_info['file'] already holds real filesystem paths (resolved at the
-    # get_media_info boundary). We still log them explicitly so an operator can
-    # see exactly which source/destination paths the move used.
+    # get_media_info boundary). Every move prints its outcome to the console so
+    # an operator can diagnose failures live, without opening activity.log.
     for src in part_info['file']:
-        dest = None
+        # Destination is computed first (string ops only) so it is always
+        # available in the failure report, even if the source is missing.
+        logical_rel = _quarantine_logical_path(src, title or '')
+        logical_parts = logical_rel.replace('\\', '/').split('/')
+        dest = os.path.join(quarantine_root, logical_rel)
+        # Collision pass 1: suffix top-level folder with the library name.
+        if os.path.exists(dest) and len(logical_parts) >= 1:
+            safe_lib = re.sub(r'[^a-zA-Z0-9]', '_',
+                              (library_name or 'UNKNOWN')).strip('_').upper()
+            suffixed_top = logical_parts[0] + '__' + safe_lib
+            dest = os.path.join(quarantine_root,
+                                os.path.join(suffixed_top, *logical_parts[1:]))
+        # Collision pass 2: append a timestamp to the filename.
+        if os.path.exists(dest):
+            base, ext = os.path.splitext(dest)
+            dest = '%s__%d%s' % (base, int(time.time()), ext)
+
+        src_exists = os.path.exists(src)
         try:
-            if not os.path.exists(src):
-                log.error("QUARANTINE source missing on disk: src=%r media_id=%r "
-                          "(check PATH_MAPPINGS if Plex uses logical paths)",
-                          src, part_info.get('id'))
-                errors.append({'file': src, 'error': 'source missing'})
-                continue
+            if not src_exists:
+                # Surface as a real FileNotFoundError so the failure report is
+                # uniform with shutil/OS errors.
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), src)
 
-            # Capture file stats BEFORE the move (they are unavailable after)
-            try:
-                original_size = os.path.getsize(src)
-                original_mtime = os.path.getmtime(src)
-            except OSError:
-                original_size = None
-                original_mtime = None
+            original_size = os.path.getsize(src)
+            original_mtime = os.path.getmtime(src)
 
-            # --- Build logical destination path ---
-            logical_rel = _quarantine_logical_path(src, title or '')
-            # Split so we can target the top-level folder for collision suffix
-            logical_parts = logical_rel.replace('\\', '/').split('/')
-            dest = os.path.join(quarantine_root, logical_rel)
-
-            # Collision pass 1: suffix top-level folder with library name
-            if os.path.exists(dest) and len(logical_parts) >= 1:
-                safe_lib = re.sub(r'[^a-zA-Z0-9]', '_',
-                                  (library_name or 'UNKNOWN')).strip('_').upper()
-                suffixed_top = logical_parts[0] + '__' + safe_lib
-                dest = os.path.join(quarantine_root,
-                                    os.path.join(suffixed_top, *logical_parts[1:]))
-
-            # Collision pass 2: append timestamp to filename
-            if os.path.exists(dest):
-                base, ext = os.path.splitext(dest)
-                dest = '%s__%d%s' % (base, int(time.time()), ext)
-
-            log.info("QUARANTINE move src=%r dest=%r media_id=%r",
-                     src, dest, part_info.get('id'))
+            log.info("QUARANTINE move src=%r dest=%r media_id=%r", src, dest, media_id)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
+            t0 = time.time()
             shutil.move(src, dest)
+            elapsed_ms = int((time.time() - t0) * 1000)
             moved.append(dest)
-            log.info("QUARANTINE moved OK src=%r dest=%r media_id=%r",
-                     src, dest, part_info.get('id'))
+            log.info("QUARANTINE moved OK src=%r dest=%r media_id=%r size=%s elapsed_ms=%d",
+                     src, dest, media_id, original_size, elapsed_ms)
+            print("\nQUARANTINED\nmedia_id=%s\nsource=%s\ndestination=%s\nsize=%s\nelapsed_ms=%d"
+                  % (media_id, src, dest, bytes_to_string(original_size), elapsed_ms))
 
             _write_quarantine_sidecar(
                 src, dest, part_info, keeper_info, reason,
@@ -1121,9 +1119,22 @@ def quarantine_files(part_info, keeper_info=None, reason=None,
             )
 
         except (OSError, shutil.Error) as e:
-            log.exception("QUARANTINE failed src=%r dest=%r media_id=%r: %s",
-                          src, dest, part_info.get('id'), e)
-            errors.append({'file': src, 'dest': dest, 'error': str(e)})
+            dest_parent = os.path.dirname(dest) if dest else None
+            dest_parent_exists = bool(dest_parent and os.path.isdir(dest_parent))
+            log.exception("QUARANTINE failed media_id=%r src=%r dest=%r "
+                          "source_exists=%s destination_parent_exists=%s: %s",
+                          media_id, src, dest, src_exists, dest_parent_exists, e)
+            print("\nQUARANTINE FAILED\nmedia_id=%s\nsource=%s\ndestination=%s\n"
+                  "exception_type=%s\nexception_message=%s\n"
+                  "source_exists=%s\ndestination_parent_exists=%s"
+                  % (media_id, src, dest, type(e).__name__, e,
+                     src_exists, dest_parent_exists))
+            if debug:
+                print(traceback.format_exc())
+            errors.append({'file': src, 'dest': dest,
+                           'exception_type': type(e).__name__, 'error': str(e),
+                           'source_exists': src_exists,
+                           'destination_parent_exists': dest_parent_exists})
 
     return {'moved': moved, 'errors': errors}
 
