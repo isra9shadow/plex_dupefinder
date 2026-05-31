@@ -2166,10 +2166,27 @@ def diagnose_paths(per_section=8):
     print("\n" + "=" * 60)
     print("PATH RESOLUTION DIAGNOSTIC (no actions taken)")
     print("=" * 60)
-    print("config.json in use: %s" % config_path)
-    print("PATH_MAPPINGS loaded from config: %s" % (cfg.get('PATH_MAPPINGS') or {}))
-    if not (cfg.get('PATH_MAPPINGS') or {}):
-        print(">>> PATH_MAPPINGS is EMPTY — Plex logical paths will NOT be translated.")
+    print("CONFIG PATH               : %s" % config_path)
+
+    # RAW = read straight from the file on disk; LOADED = what the running
+    # process actually has in cfg. If they differ, config is read from another
+    # file or not parsed as expected (rules in/out a code-vs-config problem).
+    raw = '<key absent>'
+    try:
+        raw = json.load(open(config_path, encoding='utf-8')).get('PATH_MAPPINGS', '<key absent>')
+    except Exception as e:
+        raw = '<could not read %s: %s>' % (config_path, e)
+    loaded = cfg.get('PATH_MAPPINGS') or {}
+    print("CONFIG PATH_MAPPINGS RAW   : %s" % raw)
+    print("CONFIG PATH_MAPPINGS LOADED: %s" % loaded)
+    if not loaded:
+        print(">>> LOADED is EMPTY — Plex logical paths will NOT be translated.")
+        print(">>> Add PATH_MAPPINGS to the CONFIG PATH file above, e.g.")
+        print('    "PATH_MAPPINGS": {"/movies/": "/mnt/user/media/Peliculas/",')
+        print('                      "/tv/": "/mnt/user/media/series TV/"}')
+    elif raw != loaded:
+        print(">>> RAW != LOADED — the process is reading a different config file.")
+
     total = ok = 0
     for section in cfg.get('PLEX_LIBRARIES') or []:
         print("\n----- library: %s -----" % section)
@@ -2187,8 +2204,8 @@ def diagnose_paths(per_section=8):
                     exists = bool(real_path and os.path.exists(real_path))
                     total += 1
                     ok += int(exists)
-                    print("\nPLEX PATH: %s\nREAL PATH: %s\nPATH MAPPING USED: %s\nSOURCE EXISTS=%s"
-                          % (plex_path, real_path, mapping_used or 'NONE', exists))
+                    print("\nPLEX PATH     : %s\nMATCHED PREFIX: %s\nRESOLVED PATH : %s\nEXISTS        : %s"
+                          % (plex_path, mapping_used or 'NONE', real_path, exists))
                     shown += 1
                     if shown >= per_section:
                         break
