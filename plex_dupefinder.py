@@ -1375,6 +1375,29 @@ def remove_plex_metadata(show_key, media_id):
     return False, "http_%d: %s" % (response.status_code, response.text[:200])
 
 
+def _files_confirmed_absent(part_info):
+    """True iff EVERY backing part is CONFIRMED missing on local disk.
+
+    "Confirmed" means ``check_file_exists`` reached the parent directory and
+    found the file absent (``local_check is False``). This deliberately returns
+    False for:
+      * ``local_check is None``  — filesystem not reachable from this host
+                                   (mount down / Plex-only check); a file that
+                                   merely *looks* missing during an outage must
+                                   NEVER be treated as gone.
+      * any ``local_check is True`` — the file is present; never "gone".
+
+    Used to recognise a STALE Plex entry whose real file was already removed
+    (typically a filebot/Sonarr rename, which leaves Plex pointing at the old
+    name) so the orphan metadata can be dropped instead of failing the
+    quarantine move on every run forever.
+    """
+    existence = part_info.get('parts_existence') or []
+    if not existence:
+        return False
+    return all(ex.get('local_check') is False for ex in existence)
+
+
 def remove_item(part_info, reason, keeper_info=None,
                 title=None, library_name=None, year=None):
     """Apply DRY_RUN / QUARANTINE_MODE / direct semantics.
@@ -1414,6 +1437,27 @@ def remove_item(part_info, reason, keeper_info=None,
     paths_only_mode = bool(cfg.get('FIND_DUPLICATE_FILEPATHS_ONLY'))
 
     if cfg.get('QUARANTINE_MODE', True) and not paths_only_mode:
+        # Stale-orphan shortcut: when the loser's backing file is CONFIRMED gone
+        # from disk (filebot/Sonarr renamed it; Plex kept the old entry), there
+        # is nothing to quarantine — no data exists to preserve. Drop the orphan
+        # Plex metadata directly so the phantom duplicate stops failing and
+        # recurring every run. Guarded by _files_confirmed_absent, so a mount
+        # outage (local_check is None) never reaches this branch and can never be
+        # mistaken for "gone". Only reachable on an acting run (DRY_RUN returns
+        # above; AUDIT_MODE forces DRY_RUN).
+        if _files_confirmed_absent(part_info):
+            result['mode'] = 'stale_metadata_cleanup'
+            log.info("STALE ORPHAN media_id=%r files=%r — file already gone on disk; "
+                     "removing Plex entry only (no quarantine)", media_id, files)
+            print("\n\tStale Plex entry (file already gone on disk) — removing metadata "
+                  "only, nothing to quarantine: media_id=%r" % media_id)
+            ok, detail = remove_plex_metadata(show_key, media_id)
+            result['plex_delete'] = {'success': ok, 'detail': detail}
+            result['success'] = ok
+            if not ok:
+                result['error'] = 'stale_metadata_removal_failed: %s' % detail
+            return result
+
         result['mode'] = 'quarantine'
         try:
             qresult = quarantine_files(

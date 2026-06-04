@@ -317,3 +317,112 @@ def test_summarize_quarantine_disabled_when_no_dir(cfg):
     summary = pd.summarize_quarantine()
     assert summary['enabled'] is False
     assert summary['file_count'] == 0
+
+
+# --------------------------------------------------------------------------- #
+# stale-orphan cleanup  (file already gone on disk → drop Plex entry, no move)
+# --------------------------------------------------------------------------- #
+
+def test_files_confirmed_absent_true_when_all_local_false():
+    pi = {'parts_existence': [
+        {'local_check': False, 'file': '/m/a.mkv'},
+        {'local_check': False, 'file': '/m/b.mkv'},
+    ]}
+    assert pd._files_confirmed_absent(pi) is True
+
+
+def test_files_confirmed_absent_false_when_mount_unreachable():
+    # local_check None = filesystem not reachable (mount down) — must NOT be
+    # treated as gone, or an outage could delete Plex entries for live files.
+    pi = {'parts_existence': [{'local_check': None, 'file': '/m/a.mkv'}]}
+    assert pd._files_confirmed_absent(pi) is False
+
+
+def test_files_confirmed_absent_false_when_any_present():
+    pi = {'parts_existence': [
+        {'local_check': False, 'file': '/m/a.mkv'},
+        {'local_check': True, 'file': '/m/b.mkv'},
+    ]}
+    assert pd._files_confirmed_absent(pi) is False
+
+
+def test_files_confirmed_absent_false_without_existence_info():
+    assert pd._files_confirmed_absent({}) is False
+    assert pd._files_confirmed_absent({'parts_existence': []}) is False
+
+
+def _acting_quarantine_cfg(cfg, tmp_path):
+    cfg['DRY_RUN'] = False
+    cfg['AUDIT_MODE'] = False
+    cfg['QUARANTINE_MODE'] = True
+    cfg['FIND_DUPLICATE_FILEPATHS_ONLY'] = False
+    cfg['QUARANTINE_DIR'] = str(tmp_path)
+
+
+def test_remove_item_stale_orphan_removes_plex_entry_without_moving(cfg, tmp_path, fresh_report, monkeypatch):
+    """Confirmed-gone loser → drop the orphan Plex entry, no quarantine attempt."""
+    _acting_quarantine_cfg(cfg, tmp_path)
+    calls = {}
+
+    def fake_remove(show_key, media_id):
+        calls['args'] = (show_key, media_id)
+        return True, 'http_204'
+    monkeypatch.setattr(pd, 'remove_plex_metadata', fake_remove)
+    # quarantine_files MUST NOT be called for an orphan — fail loudly if it is.
+    monkeypatch.setattr(pd, 'quarantine_files',
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("quarantine_files called for orphan")))
+
+    part = {
+        'id': 999, 'show_key': '/library/metadata/1', 'file': ['/m/gone.mkv'],
+        'file_size': 0, 'exists': False,
+        'parts_existence': [{'local_check': False, 'file': '/m/gone.mkv'}],
+    }
+    result = pd.remove_item(part, 'duplicate', keeper_info={'file': ['/m/keep.mkv']})
+
+    assert result['mode'] == 'stale_metadata_cleanup'
+    assert result['success'] is True
+    assert calls['args'] == ('/library/metadata/1', 999)
+
+
+def test_remove_item_mount_down_does_not_trigger_cleanup(cfg, tmp_path, fresh_report, monkeypatch):
+    """local_check None (filesystem unreachable) must fall through to the normal
+    quarantine path and NOT delete the Plex entry — protects against outages."""
+    _acting_quarantine_cfg(cfg, tmp_path)
+    monkeypatch.setattr(pd, 'remove_plex_metadata',
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("Plex delete during outage")))
+
+    part = {
+        'id': 999, 'show_key': '/library/metadata/1', 'file': ['/m/gone.mkv'],
+        'file_size': 0, 'exists': False,
+        'parts_existence': [{'local_check': None, 'file': '/m/gone.mkv'}],
+    }
+    result = pd.remove_item(part, 'duplicate', keeper_info={'file': ['/m/keep.mkv']})
+
+    # Falls into real quarantine, which fails to move a non-existent file and
+    # preserves the Plex entry (PATH_NOT_FOUND), exactly as before.
+    assert result['mode'] == 'quarantine'
+    assert result['success'] is False
+    assert fresh_report['failure_summary']['PATH_NOT_FOUND'] >= 1
+
+
+def test_remove_item_present_file_is_quarantined_not_cleaned(cfg, tmp_path, fresh_report, monkeypatch):
+    """A loser that still exists on disk must be quarantined (moved), never
+    treated as a stale orphan."""
+    _acting_quarantine_cfg(cfg, tmp_path)
+    src = tmp_path / 'Show' / 'Season 01' / 'loser.mkv'
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b'\0' * 500)
+    monkeypatch.setattr(pd, 'remove_plex_metadata', lambda show_key, media_id: (True, 'http_204'))
+
+    part = {
+        'id': 999, 'show_key': '/library/metadata/1', 'file': [str(src)],
+        'file_size': 500, 'exists': True,
+        'parts_existence': [{'local_check': True, 'file': str(src)}],
+    }
+    result = pd.remove_item(part, 'duplicate', keeper_info={'file': ['/m/keep.mkv']},
+                            title='Show', library_name='TV')
+
+    assert result['mode'] == 'quarantine'
+    assert result['success'] is True
+    assert not src.exists()                       # the file was actually moved
+    assert result['quarantine']['moved']          # into quarantine
