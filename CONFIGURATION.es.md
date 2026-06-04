@@ -127,10 +127,18 @@ El script se distribuye con una postura de seguridad conservadora. Un `config.js
 ---
 
 **`QUARANTINE_RETENTION_DAYS`**
-- Por defecto: `30`
-- Tipo: entero
-- Descripción: Informativo — el script **no** purga automáticamente el directorio de cuarentena. Este valor es para tu propia referencia y planificación operativa. Tras revisar los archivos en cuarentena, bórralos manualmente (o mediante una tarea programada) una vez estés conforme con las decisiones de eliminación.
-- Riesgo: 🟢 Cambiar este valor no tiene efecto en tiempo de ejecución.
+- Por defecto: `7`
+- Tipo: número (entero o días fraccionarios)
+- Descripción: Ventana de gracia que un archivo permanece en cuarentena antes de ser elegible para la purga automática. Solo tiene efecto destructivo cuando `AUTO_PURGE_QUARANTINE=true` (en caso contrario es puramente informativo y alimenta el resumen de cuarentena). La antigüedad se mide desde el `quarantine_timestamp` de cada fichero adjunto (el momento en que el archivo entró en cuarentena), **no** desde el mtime del archivo — `shutil.move` preserva el mtime original y reportaría mal el tiempo en cuarentena. Se permiten valores fraccionarios para ventanas más cortas explícitas (p. ej. `2.0` = 48 horas), pero el valor por defecto es deliberadamente **7 días**, nunca horas.
+- Riesgo: 🟡 Con `AUTO_PURGE_QUARANTINE=true`, reducir este valor acorta la ventana de recuperación. Un valor de `0` (o menor) desactiva la purga por completo (a prueba de fallos).
+
+---
+
+**`AUTO_PURGE_QUARANTINE`**
+- Por defecto: `false`
+- Tipo: booleano
+- Descripción: Cuando es `true`, los archivos que llevan en cuarentena más tiempo que `QUARANTINE_RETENTION_DAYS` se eliminan automáticamente al final de cada ejecución, y el número de archivos junto con el espacio recuperado se reportan en consola y en el reporte JSON bajo `quarantine_purge`. Esto habilita la operación totalmente autónoma (p. ej. un User Script de Unraid programado) sin que nadie tenga que vaciar la cuarentena a mano. Respeta `DRY_RUN` / `AUDIT_MODE`: en una ejecución no-activa la purga se **simula** (reporta lo que *se eliminaría* pero no toca nada). La purga falla de forma segura — un fichero adjunto con `quarantine_timestamp` ausente o no parseable se omite, nunca se elimina. Por defecto `false` para que las instalaciones existentes nunca empiecen a borrar sin haberlo activado.
+- Riesgo: 🟡 Es la única función automática que elimina archivos directamente (solo duplicados en cuarentena, nunca originales ni el keeper). Valídala primero con una ejecución en seco; la purga simulada lista cada candidato.
 
 ---
 
@@ -447,6 +455,16 @@ La puntuación determina qué duplicado se conserva. El candidato con la mayor p
 
 - Riesgo: 🟢 Activarlo crea ficheros en disco pero no tiene efecto en las eliminaciones.
 
+El reporte también incluye los campos de observabilidad usados para la operación autónoma: `failure_summary` (recuentos por categoría de fallo — `PATH_NOT_FOUND`, `MOVE_FAILED`, `PERMISSION_DENIED`, `PLEX_API_ERROR`, `QUARANTINE_ERROR`, `UNKNOWN`), `failures` (una entrada estructurada por fallo con origen/destino/excepción), `scoring_audit` (comprobación de doble conteo FILENAME/SOURCE), `lowest_confidence_groups` (ver `LOWEST_CONFIDENCE_COUNT`), `metrics` (tiempos de ejecución/descubrimiento/revalidación/acción más grupos·seg / ficheros·seg) y `quarantine_purge`.
+
+---
+
+**`LOWEST_CONFIDENCE_COUNT`**
+- Por defecto: `10`
+- Tipo: entero
+- Descripción: Cuántos grupos de menor confianza mostrar en el resumen de consola y en el reporte JSON bajo `lowest_confidence_groups`. La confianza de un grupo es la **diferencia de puntuación** (`score_delta`) entre el keeper elegido y el segundo clasificado; las diferencias más pequeñas son las decisiones con más probabilidad de ser erróneas, así que se ordenan de la más ajustada a la menos ajustada para revisarlas primero. Los grupos omitidos y los de un solo candidato (sin segundo, por tanto sin delta) se excluyen. Pon `0` para desactivar el ranking.
+- Riesgo: 🟢 Solo reporte; sin efecto en las eliminaciones.
+
 ---
 
 **`LOG_LEVEL`**
@@ -457,7 +475,7 @@ La puntuación determina qué duplicado se conserva. El candidato con la mayor p
 
 ---
 
-**Resumen de cuarentena** — Al final de cada ejecución (cuando `QUARANTINE_DIR` está establecido), el script reporta el contenido **actual** del directorio de cuarentena: número de archivos, tamaño total, antigüedad del archivo más viejo y cuántos archivos superan `QUARANTINE_RETENTION_DAYS`. Esto es solo visibilidad de lectura — el script nunca purga automáticamente. Las mismas cifras se escriben en el reporte JSON bajo la clave `quarantine`. La antigüedad se deriva del `quarantine_timestamp` de cada fichero adjunto (no del mtime del archivo, que `shutil.move` preserva del original).
+**Resumen de cuarentena** — Al final de cada ejecución (cuando `QUARANTINE_DIR` está establecido), el script reporta el contenido **actual** del directorio de cuarentena: número de archivos, tamaño total, antigüedad del archivo más viejo y cuántos archivos superan `QUARANTINE_RETENTION_DAYS`. Este resumen es de solo lectura. Las mismas cifras se escriben en el reporte JSON bajo la clave `quarantine`. La antigüedad se deriva del `quarantine_timestamp` de cada fichero adjunto (no del mtime del archivo, que `shutil.move` preserva del original). La eliminación automática de archivos caducados es opcional mediante `AUTO_PURGE_QUARANTINE` y se reporta por separado bajo `quarantine_purge`.
 
 ---
 

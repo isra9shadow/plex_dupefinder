@@ -194,7 +194,8 @@ to an existing `config.json` by `upgrade_settings()` on first startup after upgr
 |---|---|---|
 | `QUARANTINE_MODE` | `true` | Move files to `QUARANTINE_DIR` instead of deleting permanently |
 | `QUARANTINE_DIR` | `""` | Absolute path for the quarantine staging area; required when `QUARANTINE_MODE=true` |
-| `QUARANTINE_RETENTION_DAYS` | `30` | Informational reference for manual cleanup; the script does not auto-purge |
+| `QUARANTINE_RETENTION_DAYS` | `7` | Grace window before a quarantined file is eligible for purge; only acts when `AUTO_PURGE_QUARANTINE=true`, else informational |
+| `AUTO_PURGE_QUARANTINE` | `false` | Auto-delete files older than `QUARANTINE_RETENTION_DAYS` at end of run; respects `DRY_RUN`/`AUDIT_MODE`; opt-in |
 | `MIN_SCORE_DIFFERENCE` | `0` | Minimum score gap required to act; `0` disables |
 | `MIN_FILE_AGE_HOURS` | `24` | Skip groups where any file is younger than this many hours; `0` disables |
 | `MAX_SIZE_RATIO` | `5.0` | Skip groups where any non-keeper is more than this multiple larger than the keeper; `0` disables |

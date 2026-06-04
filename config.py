@@ -101,7 +101,16 @@ base_config = {
     # instead of asking Plex to delete them. Recoverable, audit-friendly.
     'QUARANTINE_MODE': True,
     'QUARANTINE_DIR': '',
-    'QUARANTINE_RETENTION_DAYS': 30,
+    # How long a quarantined file is kept before it is eligible for automatic
+    # purging. Default 7 days — a conservative grace window that still allows
+    # fully autonomous operation. NEVER defaults to hours; only an explicit
+    # fractional value (e.g. 2.0 == 48h) shortens it.
+    'QUARANTINE_RETENTION_DAYS': 7,
+    # When True, files quarantined more than QUARANTINE_RETENTION_DAYS ago are
+    # deleted automatically at the end of every run, and the count + reclaimed
+    # space are reported. Respects DRY_RUN / AUDIT_MODE (simulate only). Default
+    # OFF so existing installs never start deleting without opting in.
+    'AUTO_PURGE_QUARANTINE': False,
     # Refuse to choose between two candidates whose scores are this close.
     # 0 disables the check. Recommended: >=1000 to require a clear winner.
     'MIN_SCORE_DIFFERENCE': 0,
@@ -152,6 +161,11 @@ base_config = {
     # ----- Reporting -----
     # Directory to write per-run JSON reports. Empty disables reporting.
     'JSON_REPORT_DIR': '',
+    # How many lowest-confidence groups (smallest score_delta among actionable
+    # multi-candidate groups) to surface in the console summary and JSON report
+    # under lowest_confidence_groups. These are the decisions most likely to be
+    # wrong; review them first. 0 disables the ranking.
+    'LOWEST_CONFIDENCE_COUNT': 10,
     # File log verbosity for activity.log. One of DEBUG, INFO, WARNING, ERROR.
     # Default INFO; DEBUG adds per-part tracing (large on big libraries).
     # activity.log is size-rotated (10 MiB x 5 backups) regardless of level.
@@ -188,26 +202,23 @@ def prefilled_default_config(configs):
         'TV'
     ]
 
-    # filename scores
+    # FILENAME_SCORES are TIE-BREAKERS ONLY: edition tags (PROPER/REPACK/
+    # EXTENDED) plus the container extension. Source type (Remux/BluRay/WEB-DL/
+    # WEBRip/HDTV/DVD) and resolution are deliberately NOT scored here — they are
+    # scored once, authoritatively, by SOURCE_SCORES and VIDEO_RESOLUTION_SCORES.
+    # Scoring them here too would DOUBLE-COUNT a single real media attribute and
+    # let the filename dominate a decision. Keep this list minimal.
     default_config['FILENAME_SCORES'] = {
-        '*Remux*': 20000,
-        '*1080p*BluRay*': 15000,
-        '*720p*BluRay*': 10000,
-        '*WEB*NTB*': 5000,
-        '*WEB*VISUM*': 5000,
-        '*WEB*KINGS*': 5000,
-        '*WEB*CasStudio*': 5000,
-        '*WEB*SiGMA*': 5000,
-        '*WEB*QOQ*': 5000,
-        '*WEB*TROLLHD*': 2500,
-        '*REPACK*': 1500,
-        '*PROPER*': 1500,
-        '*WEB*TBS*': -1000,
-        '*HDTV*': -1000,
-        '*dvd*': -1000,
-        '*.avi': -1000,
-        '*.ts': -1000,
-        '*.vob': -5000
+        '*REPACK*': 500,
+        '*PROPER*': 500,
+        '*EXTENDED*': 500,
+        '*.mkv': 800,
+        '*.mp4': 300,
+        '*.avi': -10000,
+        '*.ts': -5000,
+        '*.vob': -10000,
+        '*.wmv': -8000,
+        '*.flv': -10000,
     }
 
     return default_config

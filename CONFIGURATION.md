@@ -127,10 +127,18 @@ The script ships with a conservative safety posture. A brand-new `config.json` w
 ---
 
 **`QUARANTINE_RETENTION_DAYS`**
-- Default: `30`
-- Type: integer
-- Description: Informational — the script does **not** auto-purge the quarantine directory. This value is for your own reference and operational planning. After reviewing quarantined files, delete them manually (or via a scheduled task) once you are satisfied with the removal decisions.
-- Risk: 🟢 Changing this value has no runtime effect.
+- Default: `7`
+- Type: number (integer or fractional days)
+- Description: Grace window a quarantined file is kept before it becomes eligible for automatic purging. Only has a destructive effect when `AUTO_PURGE_QUARANTINE=true` (otherwise it is purely informational and feeds the standing-quarantine summary). Age is measured from each sidecar's `quarantine_timestamp` (the time the file entered quarantine), **not** file mtime — `shutil.move` preserves the original mtime and would misreport time-in-quarantine. Fractional values are allowed for explicit shorter windows (e.g. `2.0` = 48 hours), but the default is deliberately **7 days**, never hours.
+- Risk: 🟡 With `AUTO_PURGE_QUARANTINE=true`, lowering this shortens the recovery window. A value of `0` (or less) disables purging entirely (fail-safe).
+
+---
+
+**`AUTO_PURGE_QUARANTINE`**
+- Default: `false`
+- Type: boolean
+- Description: When `true`, files that have been in quarantine longer than `QUARANTINE_RETENTION_DAYS` are deleted automatically at the end of every run, and the count plus reclaimed space are reported on the console and in the JSON report under `quarantine_purge`. This enables fully autonomous operation (e.g. an Unraid User Script on a schedule) without a human ever clearing the quarantine by hand. Honours `DRY_RUN` / `AUDIT_MODE`: in a non-acting run the purge is **simulated** (it reports what *would* be deleted but touches nothing). Purging fails closed — a sidecar with a missing or unparseable `quarantine_timestamp` is skipped, never deleted. Default `false` so existing installs never begin deleting without opting in.
+- Risk: 🟡 This is the only auto-feature that deletes files outright (quarantined duplicates only, never originals or keepers). Validate with a dry run first; the simulated purge lists every candidate path.
 
 ---
 
@@ -447,6 +455,16 @@ Scoring determines which duplicate is kept. The candidate with the highest total
 
 - Risk: 🟢 Enabling creates files on disk but has no effect on removals.
 
+The report also carries the observability fields used for autonomous operation: `failure_summary` (counts per failure category — `PATH_NOT_FOUND`, `MOVE_FAILED`, `PERMISSION_DENIED`, `PLEX_API_ERROR`, `QUARANTINE_ERROR`, `UNKNOWN`), `failures` (one structured entry per failure with source/destination/exception), `scoring_audit` (FILENAME/SOURCE double-count check), `lowest_confidence_groups` (see `LOWEST_CONFIDENCE_COUNT`), `metrics` (execution/discovery/revalidation/action time plus groups·sec / files·sec) and `quarantine_purge`.
+
+---
+
+**`LOWEST_CONFIDENCE_COUNT`**
+- Default: `10`
+- Type: integer
+- Description: How many lowest-confidence groups to surface in the console summary and JSON report under `lowest_confidence_groups`. A group's confidence is the **score gap** (`score_delta`) between the chosen keeper and the runner-up; the smallest gaps are the decisions most likely to be wrong, so they are ranked closest-call-first for review. Skipped and single-candidate groups (no runner-up, so no delta) are excluded. Set to `0` to disable the ranking.
+- Risk: 🟢 Reporting only; no effect on removals.
+
 ---
 
 **`LOG_LEVEL`**
@@ -457,7 +475,7 @@ Scoring determines which duplicate is kept. The candidate with the highest total
 
 ---
 
-**Quarantine summary** — At the end of every run (when `QUARANTINE_DIR` is set), the script reports the **standing** contents of the quarantine directory: file count, total size, oldest file age, and how many files exceed `QUARANTINE_RETENTION_DAYS`. This is read-only visibility only — the script never auto-purges. The same figures are written to the JSON report under the `quarantine` key. Age is derived from each sidecar's `quarantine_timestamp` (not file mtime, which `shutil.move` preserves from the original).
+**Quarantine summary** — At the end of every run (when `QUARANTINE_DIR` is set), the script reports the **standing** contents of the quarantine directory: file count, total size, oldest file age, and how many files exceed `QUARANTINE_RETENTION_DAYS`. This summary is read-only. The same figures are written to the JSON report under the `quarantine` key. Age is derived from each sidecar's `quarantine_timestamp` (not file mtime, which `shutil.move` preserves from the original). Automatic deletion of expired files is opt-in via `AUTO_PURGE_QUARANTINE` and reported separately under `quarantine_purge`.
 
 ---
 

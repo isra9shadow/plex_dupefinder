@@ -110,8 +110,100 @@ run_report = {
     'integrations': {},
     'summary': {},
     'quarantine': None,
+    'quarantine_purge': None,
+    'lowest_confidence_groups': [],
+    'scoring_audit': None,
+    'metrics': {},
     'errors': [],
+    # Structured, classified failures (see record_failure). Distinct from the
+    # legacy 'errors' list above, which is kept for backward compatibility.
+    'failures': [],
+    'failure_summary': {},
 }
+
+
+############################################################
+# ERROR CLASSIFICATION & OBSERVABILITY
+############################################################
+
+# Stable failure taxonomy. Every important failure is mapped to exactly one of
+# these so an operator (and the JSON report) gets a one-glance breakdown instead
+# of scrolling activity.log. UNKNOWN is the catch-all — a non-zero UNKNOWN count
+# is itself a signal that the taxonomy needs extending.
+FAILURE_CATEGORIES = (
+    'PATH_NOT_FOUND',     # source/destination path does not exist on disk
+    'MOVE_FAILED',        # shutil.move / os rename failed (not a permission issue)
+    'PERMISSION_DENIED',  # EACCES / EPERM on a filesystem operation
+    'PLEX_API_ERROR',     # Plex HTTP call (delete / fetch / search / refresh) failed
+    'QUARANTINE_ERROR',   # quarantine bookkeeping failed (sidecar, incomplete move, purge)
+    'UNKNOWN',            # unclassified — investigate
+)
+run_report['failure_summary'] = {c: 0 for c in FAILURE_CATEGORIES}
+
+
+def classify_exception(exc):
+    """Map a Python exception to a FAILURE_CATEGORIES bucket."""
+    if exc is None:
+        return 'UNKNOWN'
+    # PermissionError is an OSError subclass — test it first.
+    if isinstance(exc, PermissionError):
+        return 'PERMISSION_DENIED'
+    if isinstance(exc, FileNotFoundError):
+        return 'PATH_NOT_FOUND'
+    try:
+        if isinstance(exc, requests.RequestException):
+            return 'PLEX_API_ERROR'
+    except Exception:
+        pass
+    if isinstance(exc, (OSError, shutil.Error)):
+        # EACCES/EPERM already caught above as PermissionError; anything else
+        # here is a genuine move/IO failure.
+        return 'MOVE_FAILED'
+    return 'UNKNOWN'
+
+
+def record_failure(category, message, *, src=None, dest=None, exc=None,
+                   media_id=None, stage=None, console=True):
+    """Classify, count, log and (loudly) surface an important failure.
+
+    The whole point is that relevant errors are visible ON THE CONSOLE during
+    the run — source path, destination path and the real exception — not buried
+    in activity.log to be hunted for afterwards. Every call also increments the
+    run-level failure_summary and appends a structured entry to the report.
+    """
+    if category not in run_report['failure_summary']:
+        category = 'UNKNOWN'
+    run_report['failure_summary'][category] += 1
+    entry = {
+        'category': category,
+        'stage': stage,
+        'media_id': media_id,
+        'message': str(message),
+        'source': src,
+        'destination': dest,
+        'exception_type': type(exc).__name__ if exc is not None else None,
+        'exception': str(exc) if exc is not None else None,
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+    }
+    run_report['failures'].append(entry)
+    log.error("FAILURE [%s] stage=%s media_id=%s src=%r dest=%r: %s | exc=%s",
+              category, stage, media_id, src, dest, message, entry['exception'])
+    if console:
+        print("\n" + "!" * 60)
+        hdr = "FAILURE [%s]" % category
+        if stage:
+            hdr += "  stage=%s" % stage
+        print(hdr)
+        if media_id is not None:
+            print("  media_id    : %s" % media_id)
+        print("  message     : %s" % message)
+        if src is not None:
+            print("  source      : %s" % src)
+        if dest is not None:
+            print("  destination : %s" % dest)
+        if exc is not None:
+            print("  exception   : %s: %s" % (type(exc).__name__, exc))
+        print("!" * 60)
 
 
 ############################################################
@@ -221,6 +313,66 @@ def validate_libraries(plex_server):
 
     log.info("Validated %d configured libraries against Plex: %s",
              len(configured), configured)
+
+
+# Tokens that denote a release SOURCE or RESOLUTION — dimensions already scored
+# once, authoritatively, by SOURCE_SCORES and VIDEO_RESOLUTION_SCORES. If any of
+# them also appears in a FILENAME_SCORES pattern, that attribute is counted
+# twice and the filename can dominate a real media decision.
+_DOUBLE_COUNT_SOURCE_TOKENS = (
+    'remux', 'bdremux', 'brremux', 'bluray', 'blu-ray', 'bdrip', 'brrip',
+    'web-dl', 'webdl', 'webrip', 'web-rip', 'hdtv', 'pdtv', 'hdrip', 'dvdrip',
+    'dvd', 'cam', 'telesync', 'telecine',
+)
+_DOUBLE_COUNT_RES_TOKENS = ('2160p', '1080p', '1080i', '720p', '576p', '480p', '4k', 'uhd')
+
+# A "pure container extension" pattern such as '*.mkv' / '*.avi' — the one and
+# only dimension FILENAME_SCORES is allowed to score besides edition tags.
+_EXTENSION_PATTERN_RE = re.compile(r'^\*?\.[a-z0-9]+$')
+
+
+def audit_scoring_config():
+    """Detect FILENAME_SCORES that DOUBLE-COUNT a SOURCE/RESOLUTION dimension.
+
+    FILENAME_SCORES is meant to be a tie-breaker only: edition tags
+    (PROPER/REPACK/EXTENDED) plus the container extension. Source type and
+    resolution are scored once by SOURCE_SCORES / VIDEO_RESOLUTION_SCORES.
+    Any overlap is flagged loudly on the console and recorded in the report —
+    it is the single most common cause of a wrong keeper.
+    """
+    overlaps = []
+    for pattern in (cfg.get('FILENAME_SCORES') or {}):
+        low = pattern.lower()
+        # Container-extension patterns are legitimate; never flag them.
+        if _EXTENSION_PATTERN_RE.match(low.replace(' ', '')):
+            continue
+        stripped = low.strip('*')
+        hit = next((t for t in _DOUBLE_COUNT_SOURCE_TOKENS if t in stripped), None)
+        if hit is None:
+            hit = next((t for t in _DOUBLE_COUNT_RES_TOKENS if t in stripped), None)
+        if hit is not None:
+            overlaps.append({'pattern': pattern, 'token': hit})
+
+    run_report['scoring_audit'] = {
+        'ok': not overlaps,
+        'filename_source_overlaps': overlaps,
+        'note': ('FILENAME_SCORES should hold only edition tags '
+                 '(PROPER/REPACK/EXTENDED) + container extensions; source and '
+                 'resolution are scored by SOURCE_SCORES / VIDEO_RESOLUTION_SCORES.'),
+    }
+    if overlaps:
+        print("\n" + "-" * 60)
+        print("[!] SCORING AUDIT — possible DOUBLE COUNTING in FILENAME_SCORES:")
+        for o in overlaps:
+            print("    %-24s overlaps source/resolution token %r"
+                  % (o['pattern'], o['token']))
+        print("    These dimensions are already scored by SOURCE_SCORES and")
+        print("    VIDEO_RESOLUTION_SCORES. Remove them from FILENAME_SCORES so a")
+        print("    single media attribute is not counted twice.")
+        print("-" * 60)
+        log.warning("SCORING AUDIT double-count overlaps=%r", overlaps)
+    else:
+        log.info("SCORING AUDIT clean — no FILENAME/SOURCE double counting")
 
 
 ############################################################
@@ -654,36 +806,6 @@ def refresh_plex_item(item, timeout_seconds, poll_interval=2.0, max_stable_polls
     return item, status
 
 
-def _detect_hdr_dv(item):
-    """Inspect video streams for HDR / Dolby Vision flags (Plex metadata only)."""
-    has_hdr = False
-    has_dv = False
-    try:
-        for part in item.parts:
-            for stream in part.videoStreams():
-                if getattr(stream, 'DOVIPresent', False):
-                    has_dv = True
-                ctrc = (getattr(stream, 'colorTrc', '') or '').lower()
-                if ctrc in ('smpte2084', 'arib-std-b67'):
-                    has_hdr = True
-    except Exception:
-        log.debug("HDR/DV detection failed", exc_info=True)
-    return has_hdr, has_dv
-
-
-def _count_streams(item):
-    """Return (audio_track_count, subtitle_count) across all parts."""
-    audio_tracks = 0
-    subtitles = 0
-    try:
-        for part in item.parts:
-            audio_tracks += len(part.audioStreams())
-            subtitles += len(part.subtitleStreams())
-    except Exception:
-        log.debug("Stream count failed", exc_info=True)
-    return audio_tracks, subtitles
-
-
 def _max_audio_channels(item):
     """Channel count of the single richest audio track.
 
@@ -700,6 +822,52 @@ def _max_audio_channels(item):
     except Exception:
         log.debug("Audio channel detection failed", exc_info=True)
     return max_ch
+
+
+def _collect_media_streams(item):
+    """Single pass over an item's parts/streams.
+
+    Returns dict(max_audio_channels, audio_track_count, subtitle_count,
+    has_hdr, has_dv). This folds what used to be three separate iterations over
+    item.parts into one — previously audioStreams() was pulled TWICE per part —
+    which matters on very large libraries. ``_max_audio_channels`` is retained
+    as a standalone helper because the test-suite unit-tests it directly.
+    """
+    max_ch = audio_tracks = subtitles = 0
+    has_hdr = has_dv = False
+    try:
+        for part in item.parts:
+            try:
+                astreams = part.audioStreams()
+            except Exception:
+                astreams = []
+            audio_tracks += len(astreams)
+            for s in astreams:
+                ch = getattr(s, 'channels', 0) or 0
+                if ch > max_ch:
+                    max_ch = ch
+            try:
+                subtitles += len(part.subtitleStreams())
+            except Exception:
+                log.debug("subtitle stream count failed", exc_info=True)
+            try:
+                for s in part.videoStreams():
+                    if getattr(s, 'DOVIPresent', False):
+                        has_dv = True
+                    ctrc = (getattr(s, 'colorTrc', '') or '').lower()
+                    if ctrc in ('smpte2084', 'arib-std-b67'):
+                        has_hdr = True
+            except Exception:
+                log.debug("video stream inspection failed", exc_info=True)
+    except Exception:
+        log.debug("stream collection failed", exc_info=True)
+    return {
+        'max_audio_channels': max_ch,
+        'audio_track_count': audio_tracks,
+        'subtitle_count': subtitles,
+        'has_hdr': has_hdr,
+        'has_dv': has_dv,
+    }
 
 
 # Source-type detection. Plex exposes no "source" field, so it is parsed from
@@ -772,9 +940,12 @@ def get_score(media_info):
     # through uncapped (a genuine quality signal).
     filename_pts = 0
     filename_matches = []
+    # Lowercased basenames computed once, not once per pattern×file.
+    basenames = [os.path.basename(str(f).lower()) for f in media_info['file']]
     for filename_keyword, keyword_score in cfg['FILENAME_SCORES'].items():
-        for filename in media_info['file']:
-            if fnmatch(os.path.basename(filename.lower()), filename_keyword.lower()):
+        kw = filename_keyword.lower()
+        for base in basenames:
+            if fnmatch(base, kw):
                 filename_pts += int(keyword_score)
                 filename_matches.append({'pattern': filename_keyword, 'score': int(keyword_score)})
     filename_cap = int(cfg.get('FILENAME_SCORE_CAP', 0) or 0)
@@ -864,15 +1035,18 @@ def get_media_info(item, compute_hashes=False):
         except AttributeError:
             pass
 
+    # One pass over parts/streams for channels, track counts and HDR/DV flags.
+    streams = _collect_media_streams(item)
     # Richest single audio track, NOT the sum across tracks (which would
     # artificially inflate multi-dub releases).
-    info['audio_channels'] = _max_audio_channels(item) or (getattr(item, 'audioChannels', 0) or 0)
+    info['audio_channels'] = streams['max_audio_channels'] or (getattr(item, 'audioChannels', 0) or 0)
 
     if len(item.parts) > 1:
         info['multipart'] = True
 
-    info['has_hdr'], info['has_dv'] = _detect_hdr_dv(item)
-    info['audio_track_count'], info['subtitle_count'] = _count_streams(item)
+    info['has_hdr'], info['has_dv'] = streams['has_hdr'], streams['has_dv']
+    info['audio_track_count'] = streams['audio_track_count']
+    info['subtitle_count'] = streams['subtitle_count']
 
     info['parts_existence'] = []
     all_parts_exist = True
@@ -1041,6 +1215,10 @@ def _write_quarantine_sidecar(original_path, quarantine_path, part_info,
         print("\n[!] QUARANTINE SIDECAR FAILED\nmedia_id=%s\npath=%s\nreason=%s\n"
               "    (file is quarantined but has NO restore_command — note its path)"
               % (part_info.get('id'), sidecar_path, e))
+        record_failure('QUARANTINE_ERROR',
+                       'sidecar write failed (file moved but NOT restorable via sidecar)',
+                       src=original_path, dest=sidecar_path, exc=e,
+                       media_id=part_info.get('id'), stage='sidecar', console=False)
 
 
 def quarantine_files(part_info, keeper_info=None, reason=None,
@@ -1155,6 +1333,11 @@ def quarantine_files(part_info, keeper_info=None, reason=None,
                            'exception_type': type(e).__name__, 'error': str(e),
                            'source_exists': src_exists,
                            'destination_parent_exists': dest_parent_exists})
+            # Classify + count for failure_summary. Console output already
+            # printed above (kept verbatim); avoid a duplicate banner here.
+            record_failure(classify_exception(e), 'quarantine move failed',
+                           src=src, dest=dest, exc=e, media_id=media_id,
+                           stage='quarantine', console=False)
 
     return {'moved': moved, 'errors': errors}
 
@@ -1171,6 +1354,9 @@ def remove_plex_metadata(show_key, media_id):
     except requests.RequestException as e:
         log.exception("DELETE request error for media %r", media_id)
         print("\nPLEX DELETE FAILED\nmedia_id=%s\nreason=request_error: %s" % (media_id, e))
+        record_failure('PLEX_API_ERROR', 'Plex DELETE request error',
+                       dest=delete_url, exc=e, media_id=media_id,
+                       stage='plex_delete', console=False)
         return False, "request_error: %s" % e
 
     if response.status_code in (200, 204):
@@ -1182,6 +1368,10 @@ def remove_plex_metadata(show_key, media_id):
               media_id, response.status_code, response.text[:200])
     print("\nPLEX DELETE FAILED\nmedia_id=%s\nreason=http_%d: %s"
           % (media_id, response.status_code, response.text[:200]))
+    record_failure('PLEX_API_ERROR',
+                   'Plex DELETE returned HTTP %d' % response.status_code,
+                   dest=delete_url, media_id=media_id, stage='plex_delete',
+                   console=False)
     return False, "http_%d: %s" % (response.status_code, response.text[:200])
 
 
@@ -1255,6 +1445,10 @@ def remove_item(part_info, reason, keeper_info=None,
             print("\nQUARANTINE INCOMPLETE\nmedia_id=%s\nmoved=%d failed=%d\n"
                   "reason=not all backing files moved; Plex entry PRESERVED (no Plex delete)"
                   % (media_id, n_moved, n_err))
+            record_failure('QUARANTINE_ERROR',
+                           'quarantine incomplete: %d moved, %d failed — Plex entry preserved'
+                           % (n_moved, n_err),
+                           media_id=media_id, stage='quarantine', console=False)
             return result
         ok, detail = remove_plex_metadata(show_key, media_id)
         result['plex_delete'] = {'success': ok, 'detail': detail}
@@ -1625,6 +1819,167 @@ def summarize_quarantine():
     return summary
 
 
+def _prune_empty_dirs(start_dir, stop_dir):
+    """Remove empty directories from ``start_dir`` upward, never above ``stop_dir``.
+
+    Best-effort cleanup after a purge so the quarantine tree does not accumulate
+    empty show/season folders. Stops at the first non-empty dir or at stop_dir.
+    """
+    try:
+        start = os.path.abspath(start_dir)
+        stop = os.path.abspath(stop_dir)
+    except (OSError, ValueError):
+        return
+    while start != stop and start.startswith(stop + os.sep):
+        try:
+            if os.path.isdir(start) and not os.listdir(start):
+                os.rmdir(start)
+                start = os.path.dirname(start)
+            else:
+                break
+        except OSError:
+            break
+
+
+def purge_quarantine(simulate):
+    """Delete quarantined files older than QUARANTINE_RETENTION_DAYS.
+
+    Driven by AUTO_PURGE_QUARANTINE. Age comes from each sidecar's
+    ``quarantine_timestamp`` (NOT file mtime, which shutil.move preserves from
+    the original and would misreport time-in-quarantine). For every expired
+    entry both the media file and its sidecar are removed, empty folders are
+    pruned, and the count + reclaimed space are reported.
+
+    ``simulate`` (DRY_RUN / AUDIT_MODE) reports what WOULD be purged without
+    deleting anything — honouring the project guarantee that a dry run never
+    touches disk.
+    """
+    result = {
+        'enabled': bool(cfg.get('AUTO_PURGE_QUARANTINE', False)),
+        'simulated': bool(simulate),
+        'retention_days': cfg.get('QUARANTINE_RETENTION_DAYS'),
+        'candidates': 0,
+        'removed_files': 0,
+        'reclaimed_bytes': 0,
+        'reclaimed_human': bytes_to_string(0),
+        'errors': 0,
+    }
+    if not result['enabled']:
+        return result
+
+    qdir = (cfg.get('QUARANTINE_DIR') or '').strip()
+    retention_days = float(cfg.get('QUARANTINE_RETENTION_DAYS') or 0)
+    if not qdir or not os.path.isdir(qdir):
+        log.info("AUTO_PURGE skipped — QUARANTINE_DIR missing or not a directory")
+        return result
+    if retention_days <= 0:
+        log.info("AUTO_PURGE skipped — QUARANTINE_RETENTION_DAYS <= 0")
+        return result
+
+    now = datetime.now(timezone.utc)
+    candidates = removed = reclaimed = errors = 0
+    label = "[DRY-RUN] would purge" if simulate else "purged"
+
+    print("\n[*] AUTO_PURGE_QUARANTINE active — retention=%s days%s"
+          % (retention_days, " (simulate)" if simulate else ""))
+
+    for root, _dirs, files in os.walk(qdir):
+        for name in files:
+            if not name.endswith('.dupefinder_meta.json'):
+                continue
+            sidecar = os.path.join(root, name)
+            try:
+                with open(sidecar, 'r', encoding='utf-8') as fp:
+                    meta = json.load(fp)
+            except (OSError, ValueError):
+                continue
+
+            ts = meta.get('quarantine_timestamp')
+            try:
+                moved_at = datetime.fromisoformat(ts)
+                if moved_at.tzinfo is None:
+                    moved_at = moved_at.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+            age_days = (now - moved_at).total_seconds() / 86400.0
+            if age_days <= retention_days:
+                continue
+
+            candidates += 1
+            # Prefer the path recorded in the sidecar; fall back to the implied
+            # sibling file (sidecar name minus the suffix).
+            qpath = meta.get('quarantine_path') or os.path.join(
+                root, name[:-len('.dupefinder_meta.json')])
+            recorded_size = meta.get('original_size')
+            recorded_size = int(recorded_size) if isinstance(recorded_size, (int, float)) else 0
+
+            if simulate:
+                removed += 1
+                reclaimed += recorded_size
+                print("    %s (%.1fd old): %s" % (label, age_days, qpath))
+                continue
+
+            try:
+                freed = 0
+                if os.path.exists(qpath):
+                    freed = os.path.getsize(qpath)
+                    os.remove(qpath)
+                os.remove(sidecar)
+                removed += 1
+                reclaimed += freed or recorded_size
+                _prune_empty_dirs(os.path.dirname(qpath), qdir)
+                log.info("AUTO_PURGE removed %r (%.1fd old, %s)",
+                         qpath, age_days, bytes_to_string(freed or recorded_size))
+                print("    %s (%.1fd old): %s" % (label, age_days, qpath))
+            except OSError as e:
+                errors += 1
+                record_failure(classify_exception(e), 'quarantine auto-purge failed',
+                               src=qpath, exc=e, stage='purge', console=True)
+
+    result.update(
+        candidates=candidates,
+        removed_files=removed,
+        reclaimed_bytes=reclaimed,
+        reclaimed_human=bytes_to_string(reclaimed),
+        errors=errors,
+    )
+    log.info("AUTO_PURGE done simulate=%s candidates=%d removed=%d reclaimed=%s errors=%d",
+             simulate, candidates, removed, bytes_to_string(reclaimed), errors)
+    return result
+
+
+def compute_lowest_confidence_groups(groups, limit=None):
+    """Rank actionable groups by SMALLEST score_delta (closest call first).
+
+    A small delta means the keeper barely beat its sibling — exactly the
+    decisions most likely to be wrong. Returns a list of compact dicts and
+    stores it in the report under lowest_confidence_groups so an operator can
+    review the riskiest decisions first. Skipped and single-candidate groups
+    (no delta) are excluded.
+    """
+    if limit is None:
+        limit = int(cfg.get('LOWEST_CONFIDENCE_COUNT', 10) or 0)
+    ranked = []
+    for g in groups:
+        d = g.get('decision') or {}
+        if d.get('skip') or d.get('score_delta') is None:
+            continue
+        keeper_id = d.get('keeper_id')
+        keeper = (g.get('parts') or {}).get(keeper_id, {}) if keeper_id is not None else {}
+        ranked.append({
+            'title': g.get('title'),
+            'library': g.get('library'),
+            'item_key': g.get('item_key'),
+            'score_delta': d.get('score_delta'),
+            'top_score': d.get('top_score'),
+            'second_score': d.get('second_score'),
+            'keeper_id': keeper_id,
+            'keeper_files': keeper.get('file'),
+        })
+    ranked.sort(key=lambda r: r['score_delta'])
+    return ranked[:limit] if limit and limit > 0 else ranked
+
+
 def write_decision(title=None, keeping=None, removed=None, note=None):
     lines = []
     if title:
@@ -1880,10 +2235,11 @@ def discovery_pass(sections):
     for section in sections:
         try:
             dupes = get_dupes(section)
-        except Exception:
+        except Exception as e:
             log.exception("Failed to fetch dupes for section %r", section)
-            print("Failed to fetch dupes for section %r — see activity.log" % section)
             run_report['errors'].append({'stage': 'get_dupes', 'section': section})
+            record_failure('PLEX_API_ERROR', 'failed to fetch duplicates for section %r' % section,
+                           exc=e, stage='get_dupes')
             continue
         print("  found %d dupe groups in %r" % (len(dupes), section))
 
@@ -1930,12 +2286,15 @@ def discovery_pass(sections):
                     decision['top_score'], decision['second_score'], decision['score_delta'],
                     decision['max_size_ratio'], decision['youngest_age_hours'],
                 )
-            except Exception:
+            except Exception as e:
                 log.exception("Failed to gather item in section %r", section)
                 run_report['errors'].append({
                     'stage': 'gather_item', 'section': section,
                     'title': getattr(item, 'title', None),
                 })
+                record_failure(classify_exception(e), 'failed to gather/score item',
+                               media_id=getattr(item, 'title', None), exc=e,
+                               stage='gather_item')
     return groups
 
 
@@ -1948,6 +2307,7 @@ def _revalidate_and_act_group(group):
         'groups_processed', 'groups_skipped_user', 'groups_skipped_safety',
         'groups_skipped_inconsistent', 'groups_failed_refetch',
         'items_removed', 'items_failed', 'freed_bytes',
+        'reval_seconds', 'action_seconds',
     ), 0)
 
     record = {
@@ -1993,12 +2353,15 @@ def _revalidate_and_act_group(group):
             return counters
 
         # Re-fetch the item from Plex
+        _reval_t0 = time.monotonic()
         try:
             fresh_item = plex.fetchItem(group['item_key'])
         except Exception as e:
             log.warning("PASS2 refetch failed group=%r error=%s", title, e)
             record['revalidation'] = {'status': 'refetch_failed', 'error': str(e)}
             record['errors'].append({'stage': 'refetch', 'detail': str(e)})
+            record_failure('PLEX_API_ERROR', 'PASS2 re-fetch from Plex failed for %r' % title,
+                           src=group.get('item_key'), exc=e, stage='refetch')
             counters['groups_failed_refetch'] = 1
             return counters
 
@@ -2007,6 +2370,7 @@ def _revalidate_and_act_group(group):
         fresh_decision = select_keeper(fresh_parts)
 
         diffs = detect_inconsistencies(group['parts'], fresh_parts, snap_decision, fresh_decision)
+        counters['reval_seconds'] = time.monotonic() - _reval_t0
         record['revalidation'] = {
             'status': 'consistent' if not diffs else 'inconsistent',
             'diffs': diffs,
@@ -2086,6 +2450,7 @@ def _revalidate_and_act_group(group):
         print("\tKeeping  : %r - %r" % (keeper_id, keeper_info.get('file')))
 
         delete_delay = float(cfg.get('PLEX_DELETE_DELAY_SECONDS', 2.0))
+        _action_t0 = time.monotonic()
         for mid, pi in fresh_parts.items():
             if mid == keeper_id:
                 continue
@@ -2127,13 +2492,18 @@ def _revalidate_and_act_group(group):
             if delete_delay > 0:
                 time.sleep(delete_delay)
 
+        # Wall-clock for the removal loop (includes any PLEX_DELETE_DELAY_SECONDS
+        # rate-limit pauses — that is real time the action phase took).
+        counters['action_seconds'] = time.monotonic() - _action_t0
         counters['groups_processed'] = 1
         return counters
 
-    except Exception:
+    except Exception as e:
         log.exception("PASS2 unexpected error group=%r", title)
         record['errors'].append({'stage': 'revalidation_or_action', 'detail': 'unexpected exception'})
         run_report['errors'].append({'stage': 'revalidation_or_action', 'title': title})
+        record_failure(classify_exception(e), 'unexpected error during revalidation/action for %r' % title,
+                       exc=e, stage='revalidation_or_action')
         return counters
     finally:
         run_report['groups'].append(record)
@@ -2148,6 +2518,7 @@ def revalidate_and_act(groups):
         'groups_processed', 'groups_skipped_user', 'groups_skipped_safety',
         'groups_skipped_inconsistent', 'groups_failed_refetch',
         'items_removed', 'items_failed', 'freed_bytes',
+        'reval_seconds', 'action_seconds',
     ), 0)
 
     for group in groups:
@@ -2244,9 +2615,14 @@ if __name__ == "__main__":
 """)
     # Runtime setup (deferred from import so the module stays import-safe for tests).
     setup_logging()
+    run_started_monotonic = time.monotonic()
     validate_config()
     plex = connect_plex()
     validate_libraries(plex)
+
+    # Scoring config audit: warn (loudly) about FILENAME/SOURCE double counting
+    # before any decision is made. Recorded in the JSON report too.
+    audit_scoring_config()
 
     # Path-resolution diagnostic: validate PATH_MAPPINGS without touching anything.
     if '--diagnose-paths' in sys.argv:
@@ -2307,7 +2683,9 @@ if __name__ == "__main__":
             sys.exit(0)
 
     # ----- PASS 1 -----
+    _discovery_t0 = time.monotonic()
     groups = discovery_pass(cfg['PLEX_LIBRARIES'])
+    discovery_seconds = time.monotonic() - _discovery_t0
 
     actionable = [g for g in groups if not g['decision']['skip']]
     skipped_p1 = len(groups) - len(actionable)
@@ -2345,7 +2723,14 @@ if __name__ == "__main__":
         'groups_actionable': len(actionable),
         'groups_skipped': skipped_p1,
         'plan_path': plan_path,
+        'discovery_seconds': round(discovery_seconds, 2),
     }
+
+    # Lowest-confidence ranking: the actionable decisions with the SMALLEST score
+    # gap between keeper and runner-up — i.e. the most likely to be wrong. Stored
+    # in the report and surfaced in the console summary for first-line review.
+    lowest_confidence = compute_lowest_confidence_groups(groups)
+    run_report['lowest_confidence_groups'] = lowest_confidence
 
     # Confirmation gate before Pass 2 acts destructively.
     if (not dry_run and auto_delete
@@ -2402,7 +2787,31 @@ if __name__ == "__main__":
         'items_failed': totals['items_failed'],
         'freed_bytes': totals['freed_bytes'],
         'freed_human': bytes_to_string(totals['freed_bytes']),
+        'failure_summary': run_report['failure_summary'],
     }
+
+    # ----- Metrics -----
+    execution_seconds = time.monotonic() - run_started_monotonic
+    total_files = sum(
+        len(pi.get('file') or [])
+        for g in groups
+        for pi in (g.get('parts') or {}).values()
+    )
+    metrics = {
+        'execution_seconds': round(execution_seconds, 2),
+        'discovery_seconds': round(discovery_seconds, 2),
+        'revalidation_seconds': round(totals['reval_seconds'], 2),
+        'action_seconds': round(totals['action_seconds'], 2),
+        'groups_total': len(groups),
+        'files_total': total_files,
+        'groups_per_second': round(len(groups) / execution_seconds, 2) if execution_seconds > 0 else None,
+        'files_per_second': round(total_files / execution_seconds, 2) if execution_seconds > 0 else None,
+    }
+    run_report['metrics'] = metrics
+
+    # ----- Quarantine auto-purge (respects DRY_RUN / AUDIT_MODE) -----
+    purge_stats = purge_quarantine(simulate=(dry_run or audit_mode))
+    run_report['quarantine_purge'] = purge_stats
 
     quarantine_stats = summarize_quarantine()
     run_report['quarantine'] = quarantine_stats
@@ -2429,6 +2838,50 @@ if __name__ == "__main__":
     print("Items failed to remove            : %d" % totals['items_failed'])
     print("Space freed (actual moves)        : %s" % bytes_to_string(totals['freed_bytes']))
 
+    # ----- Metrics -----
+    print("-" * 60)
+    print("METRICS")
+    print("Execution time                    : %.2fs" % metrics['execution_seconds'])
+    print("Discovery time                    : %.2fs" % metrics['discovery_seconds'])
+    print("Revalidation time                 : %.2fs" % metrics['revalidation_seconds'])
+    print("Action time                       : %.2fs" % metrics['action_seconds'])
+    print("Groups/sec                        : %s" % (metrics['groups_per_second'] if metrics['groups_per_second'] is not None else "n/a"))
+    print("Files/sec                         : %s" % (metrics['files_per_second'] if metrics['files_per_second'] is not None else "n/a"))
+
+    # ----- Failure summary (classified) -----
+    print("-" * 60)
+    total_failures = sum(run_report['failure_summary'].values())
+    print("FAILURE SUMMARY                   : %d total" % total_failures)
+    for category in FAILURE_CATEGORIES:
+        count = run_report['failure_summary'][category]
+        if count:
+            print("  %-20s            : %d" % (category, count))
+    if total_failures == 0:
+        print("  (no failures)")
+    else:
+        print("  (full per-failure detail above and in the JSON report)")
+
+    # ----- Lowest-confidence decisions -----
+    if lowest_confidence:
+        print("-" * 60)
+        print("LOWEST-CONFIDENCE DECISIONS (smallest score gap — review first)")
+        for lc in lowest_confidence:
+            keeper_file = (lc.get('keeper_files') or ['?'])
+            keeper_file = keeper_file[0] if keeper_file else '?'
+            print("  delta=%-7s %s" % (lc['score_delta'], lc['title']))
+            print("            keeper id=%s : %s" % (lc['keeper_id'], os.path.basename(str(keeper_file))))
+
+    # ----- Quarantine auto-purge -----
+    if purge_stats['enabled']:
+        print("-" * 60)
+        verb = "would be purged" if purge_stats['simulated'] else "purged"
+        print("AUTO-PURGE (retention %s days)%s"
+              % (purge_stats['retention_days'], " [SIMULATED]" if purge_stats['simulated'] else ""))
+        print("Files %-21s       : %d" % (verb, purge_stats['removed_files']))
+        print("Space reclaimed                   : %s" % purge_stats['reclaimed_human'])
+        if purge_stats['errors']:
+            print("Purge errors                      : %d" % purge_stats['errors'])
+
     if quarantine_stats['enabled']:
         print("-" * 60)
         print("QUARANTINE (standing total in %s)" % quarantine_stats['dir'])
@@ -2444,4 +2897,9 @@ if __name__ == "__main__":
         if quarantine_stats['sidecars_unreadable']:
             print("Unreadable sidecars (skipped)     : %d"
                   % quarantine_stats['sidecars_unreadable'])
-        print("(quarantine is never auto-purged — review and clear it manually)")
+        if cfg.get('AUTO_PURGE_QUARANTINE'):
+            print("(AUTO_PURGE_QUARANTINE is ON — files older than %s days are purged each run)"
+                  % cfg.get('QUARANTINE_RETENTION_DAYS'))
+        else:
+            print("(AUTO_PURGE_QUARANTINE is OFF — review and clear quarantine manually,")
+            print(" or set AUTO_PURGE_QUARANTINE=true for autonomous cleanup)")

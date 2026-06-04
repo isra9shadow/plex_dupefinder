@@ -195,7 +195,8 @@ a un `config.json` existente mediante `upgrade_settings()` en el primer arranque
 |---|---|---|
 | `QUARANTINE_MODE` | `true` | Mover archivos a `QUARANTINE_DIR` en lugar de borrarlos permanentemente |
 | `QUARANTINE_DIR` | `""` | Ruta absoluta para el área de preparación de cuarentena; requerida cuando `QUARANTINE_MODE=true` |
-| `QUARANTINE_RETENTION_DAYS` | `30` | Referencia informativa para la limpieza manual; el script no purga automáticamente |
+| `QUARANTINE_RETENTION_DAYS` | `7` | Ventana de gracia antes de que un archivo en cuarentena sea elegible para purga; solo actúa con `AUTO_PURGE_QUARANTINE=true`, si no es informativo |
+| `AUTO_PURGE_QUARANTINE` | `false` | Elimina automáticamente archivos más antiguos que `QUARANTINE_RETENTION_DAYS` al final de la ejecución; respeta `DRY_RUN`/`AUDIT_MODE`; opcional |
 | `MIN_SCORE_DIFFERENCE` | `0` | Diferencia de puntuación mínima requerida para actuar; `0` la desactiva |
 | `MIN_FILE_AGE_HOURS` | `24` | Omitir grupos donde algún archivo es más reciente que estas horas; `0` lo desactiva |
 | `MAX_SIZE_RATIO` | `5.0` | Omitir grupos donde algún no-guardado es más de este múltiplo mayor que el guardado; `0` lo desactiva |
