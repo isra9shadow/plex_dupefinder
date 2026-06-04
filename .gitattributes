@@ -1,0 +1,4 @@
+# Shell scripts MUST keep Unix (LF) line endings or they break on Linux/Unraid
+# (a CRLF shebang line yields "bad interpreter"). Force LF regardless of the
+# committer's platform autocrlf setting.
+*.sh text eol=lf
