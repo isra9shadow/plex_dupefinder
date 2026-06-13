@@ -1,0 +1,86 @@
+id,title,body,labels,milestone,effort_days,depends_on
+STORY-001,Repo skeleton + tooling,"pyproject (ruff/mypy-strict/pytest/coverage), pre-commit, empty package tree","epic-000,P0,risk-low,story",Wave-0-Foundation,1,
+STORY-002,AGENTS.md conventions contract,"Behaviour contract (FREEZE-1)","epic-000,P0,risk-low,story",Wave-0-Foundation,1,STORY-001
+STORY-003,AI persistent context,"CLAUDE.md, AI_CONTEXT.md, docs/INVARIANTS.md","epic-000,P0,risk-low,story",Wave-0-Foundation,1,STORY-001
+STORY-004,Root ADRs,"docs/adr/0001-0003","epic-000,P0,risk-low,story",Wave-0-Foundation,1,STORY-001
+STORY-005,Paso 0: legacy under git,"git init + .gitignore + initial commit of scripts/","epic-012,P0,risk-med,story,security",Wave-0-Foundation,0.5,
+STORY-006,Rotate exposed credentials,"Rotate/invalidate TMDB/ARR/qBit/Telegram (assume compromised)","epic-012,P0,risk-high,story,security",Wave-0-Foundation,0.5,
+STORY-007,core/secrets.py + .env.example,"Fail-closed ENV/.env loader, typed","epic-012,P0,risk-med,story,security",Wave-1-Core,1,STORY-001;STORY-010
+STORY-008,Secret scanning in CI,"gitleaks stage; plant-secret fails build","epic-012,P1,risk-low,story,security",Wave-0-Foundation,0.5,STORY-060
+STORY-009,Quarantine/rollback/backup spec,"SECURITY.md feeding core/safety + core/fs","epic-012,P0,risk-med,story,security",Wave-1-Core,1,STORY-004
+STORY-010,core/types.py + core/errors.py,"Domain dataclasses + exception hierarchy","epic-001,P0,risk-low,story,core",Wave-1-Core,1,STORY-001
+STORY-011a,core/config load + layering,"defaults->json->ENV typed load","epic-001,P0,risk-med,story,core",Wave-1-Core,1,STORY-010
+STORY-011b,core/config merge/upgrade,"Merge new defaults into old config","epic-001,P0,risk-med,story,core",Wave-1-Core,0.5,STORY-011a
+STORY-012,core/logging.py,"Structured JSON + rotation + run_id","epic-001,P0,risk-low,story,core",Wave-1-Core,1,STORY-010
+STORY-013,core/locks.py,"flock single-instance","epic-001,P0,risk-low,story,core",Wave-1-Core,0.5,STORY-010
+STORY-014a,core/safety flags (DRY_RUN/AUDIT),"Resolve run mode + safe defaults","epic-001,P0,risk-high,story,core,safety",Wave-1-Core,1,STORY-010;STORY-009
+STORY-014b,core/safety guards,"MIN_FILE_AGE, STABILITY_CHECK, MAX_SIZE_RATIO","epic-001,P0,risk-high,story,core,safety",Wave-1-Core,1,STORY-014a
+STORY-014c,core/safety retention policy,"Retention window + purge eligibility","epic-001,P0,risk-high,story,core,safety",Wave-1-Core,0.5,STORY-014a
+STORY-015a,core/fs move-to-quarantine + sidecar,"ONLY mover; restore sidecar","epic-001,P0,risk-high,story,core,safety",Wave-1-Core,1,STORY-014a;STORY-014b
+STORY-015b,core/fs restore + audited purge,"Restore from sidecar; retention purge (only real delete)","epic-001,P0,risk-high,story,core,safety",Wave-1-Core,1,STORY-015a;STORY-014c
+STORY-016,Publish core/CONTRACT.md (FREEZE-2),"Freeze public API + types; unblocks all modules","epic-001,P0,risk-med,story,core,freeze",Wave-1-Core,0.5,STORY-010;STORY-011b;STORY-012;STORY-013;STORY-014c;STORY-015b
+STORY-017a,dupefinder on core config/logging,"Wire existing dupefinder to core","epic-001,P1,risk-med,story,module",Wave-2-Modules,1,STORY-016
+STORY-017b,dupefinder on core fs/safety,"Route dupefinder actions through core/fs+safety","epic-001,P1,risk-high,story,module",Wave-2-Modules,1,STORY-017a;STORY-015b
+STORY-018,run.py dispatcher + pipelines.yaml,"Single CLI + declarative pipelines","epic-001,P0,risk-low,story,core",Wave-1-Core,1,STORY-016
+STORY-019,core/notify.py single notifier,"One Telegram notifier, levels","epic-007,P0,risk-low,story,core",Wave-1-Core,1,STORY-012;STORY-007
+STORY-020,Notification templates + wiring,"START/OK/FAIL + daily summary","epic-007,P1,risk-low,story",Wave-2-Modules,0.5,STORY-019
+STORY-021,Report JSON schema + writer,"reports/<run_id>.json schema-validated","epic-011,P1,risk-low,story,observability",Wave-1-Core,1,STORY-010
+STORY-022,core/metrics.py textfile,"Prometheus-ready metrics","epic-011,P2,risk-low,story,observability",Wave-1-Core,1,STORY-010
+STORY-023,core/health.py + run.py health,"Healthcheck exit codes","epic-011,P1,risk-low,story,observability",Wave-2-Modules,1,STORY-016;STORY-021
+STORY-024,Observability docs,"OPERATIONS observability section","epic-011,P2,risk-low,story,docs",Wave-2-Modules,0.5,STORY-047
+STORY-025,integrations/radarr.py,"Typed Radarr client, retry/timeout","epic-003,P0,risk-low,story,integration",Wave-2-Modules,1,STORY-016;STORY-007
+STORY-026,integrations/sonarr.py,"Typed Sonarr client","epic-003,P0,risk-low,story,integration",Wave-2-Modules,1,STORY-016;STORY-007
+STORY-027a,arr_orphans detection (report),"List folders not mapped in ARR","epic-003,P1,risk-med,story,module",Wave-2-Modules,1,STORY-025;STORY-026
+STORY-027b,arr_orphans quarantine move,"Move orphans via core/fs","epic-003,P1,risk-high,story,module",Wave-2-Modules,0.5,STORY-027a;STORY-015a
+STORY-028a,arr_db check + backup,"Integrity check + timestamped backup","epic-003,P1,risk-high,story,module",Wave-2-Modules,1,STORY-015a;STORY-030
+STORY-028b,arr_db recover + swap (gate),"Recover/rebuild/swap only if integrity OK","epic-003,P1,risk-high,story,module",Wave-2-Modules,1,STORY-028a
+STORY-029a,perms drift detect,"Detect owner/group drift (no change)","epic-003,P1,risk-high,story,module",Wave-2-Modules,1,STORY-030
+STORY-029b,perms apply (newperms no 777),"Fix perms via adapter, never 777","epic-003,P1,risk-high,story,module",Wave-2-Modules,0.5,STORY-029a
+STORY-030,adapters/bash/newperms.sh + core/docker.py,"Safe Unraid wrappers (stop/start)","epic-003,P1,risk-med,story,adapter",Wave-2-Modules,0.5,STORY-016
+STORY-031,DB restore submodule,"Non-interactive ARR DB restore","epic-003,P2,risk-med,story,module",Wave-2-Modules,1,STORY-028b
+STORY-032a,integrations/tmdb.py,"Typed TMDb client + cache","epic-004,P0,risk-low,story,integration",Wave-2-Modules,1,STORY-016;STORY-007
+STORY-032b,integrations/tvmaze.py,"Typed TVmaze client + cache","epic-004,P0,risk-low,story,integration",Wave-2-Modules,1,STORY-016;STORY-007
+STORY-033,ffprobe/ffmpeg adapter,"Duration/streams/smoke probe","epic-004,P0,risk-low,story,adapter",Wave-2-Modules,1,STORY-016
+STORY-034a,media verdict from probe,"no_video/no_duration/decode-error verdicts","epic-004,P1,risk-high,story,module",Wave-2-Modules,1,STORY-033;STORY-014b
+STORY-034b,media verdict runtime vs API,"Shortfall vs expected runtime + thresholds","epic-004,P1,risk-high,story,module",Wave-2-Modules,1,STORY-034a;STORY-032a;STORY-032b
+STORY-035,media quarantine + sidecar,"Move bad/doubtful media to quarantine","epic-004,P1,risk-high,story,module",Wave-2-Modules,1,STORY-034b;STORY-015a
+STORY-036a,parity dataset + harness,"Fixed dataset + verdict diff harness","epic-004,P1,risk-med,story,regression",Wave-3-Migration,1,STORY-034b;STORY-058a
+STORY-036b,parity run + reconcile,"Achieve verdict parity with legacy","epic-004,P1,risk-med,story,regression",Wave-3-Migration,1,STORY-036a
+STORY-037,integrations/qbittorrent.py,"Typed qBittorrent client","epic-005,P0,risk-low,story,integration",Wave-2-Modules,1,STORY-016;STORY-007
+STORY-038a,watchdog detect stalled/48h,"Detect stalledDL / inactive >=48h","epic-005,P1,risk-med,story,module",Wave-2-Modules,1,STORY-037;STORY-025;STORY-026
+STORY-038b,watchdog classify by category,"Map to sonarr/radarr/unknown","epic-005,P1,risk-med,story,module",Wave-2-Modules,0.5,STORY-038a
+STORY-039,blocklist action + fallback tag,"Opt-in ARR queue removal; else tag failed","epic-005,P1,risk-med,story,module",Wave-2-Modules,1,STORY-038b
+STORY-040,config/disk_map.json schema + loader,"Declarative disks/shares/margins","epic-006,P0,risk-low,story,core",Wave-2-Modules,1,STORY-011a
+STORY-041a,disk_balance planner,"Greedy SSD->HDD plan with headroom","epic-006,P1,risk-med,story,module",Wave-2-Modules,1,STORY-040
+STORY-041b,disk_balance executor,"Execute plan via core/fs","epic-006,P1,risk-high,story,module",Wave-2-Modules,0.5,STORY-041a;STORY-015a
+STORY-042a,share_rebalance cfg parse + plan,"Read shares cfg, find misplaced","epic-006,P1,risk-med,story,module",Wave-2-Modules,1,STORY-040
+STORY-042b,share_rebalance executor,"Move misplaced via core/fs","epic-006,P1,risk-high,story,module",Wave-2-Modules,0.5,STORY-042a;STORY-015a
+STORY-043a,decompress verify,"Verify rar integrity before extract","epic-006,P1,risk-med,story,module",Wave-2-Modules,1,STORY-016
+STORY-043b,decompress extract + quarantine-on-fail,"Extract; failed archives -> quarantine","epic-006,P1,risk-med,story,module",Wave-2-Modules,0.5,STORY-043a;STORY-015a
+STORY-044,cleanup (no 777),"Junk/broken symlinks/empty dirs via core/fs","epic-006,P1,risk-high,story,module",Wave-2-Modules,1,STORY-015a
+STORY-045,series_blacklist to quarantine,"Remove blacklisted series via quarantine, not rm","epic-006,P1,risk-high,story,module",Wave-2-Modules,1,STORY-015a
+STORY-046,ARCHITECTURE.md,"Target architecture document","epic-002,P1,risk-low,story,docs",Wave-2-Modules,1,STORY-016
+STORY-047,OPERATIONS.md,"How the platform is operated 24/7","epic-002,P1,risk-low,story,docs",Wave-2-Modules,1,STORY-016
+STORY-048,RUNBOOK.md,"Step-by-step incident procedures","epic-002,P1,risk-low,story,docs",Wave-3-Migration,1,STORY-047
+STORY-049,TROUBLESHOOTING.md,"Symptom -> cause -> fix","epic-002,P2,risk-low,story,docs",Wave-3-Migration,0.5,STORY-047
+STORY-050,CONTRIBUTING.md,"Dev/PR workflow","epic-002,P2,risk-low,story,docs",Wave-2-Modules,0.5,STORY-002
+STORY-051,README.md (platform),"Platform readme + quickstart","epic-002,P1,risk-low,story,docs",Wave-2-Modules,0.5,STORY-046
+STORY-052,MIGRATION_PLAN.md,"Legacy -> platform migration plan","epic-002,P1,risk-low,story,docs",Wave-3-Migration,1,STORY-064
+STORY-053,Per-module READMEs (rollup),"README for each module","epic-002,P2,risk-low,story,docs",Wave-2-Modules,1,STORY-016
+STORY-054a,conftest temp FS + fixtures,"Shared fixtures, temp FS","epic-008,P0,risk-low,story,qa",Wave-0-Foundation,1,STORY-010
+STORY-054b,fakes (Plex/ARR/qBit),"In-memory fakes","epic-008,P0,risk-low,story,qa",Wave-0-Foundation,0.5,STORY-054a
+STORY-055,Coverage gate >90%,"Block merge if module coverage <90%","epic-008,P1,risk-low,story,qa",Wave-2-Modules,0.5,STORY-060
+STORY-056,Security test suite,"no-direct-delete + no-secrets + no-777","epic-008,P0,risk-med,story,qa,security",Wave-1-Core,1,STORY-015b;STORY-054b
+STORY-057,Smoke/dry-run harness,"run.py <mod> --dry-run exits 0, no change","epic-008,P1,risk-low,story,qa",Wave-2-Modules,1,STORY-018
+STORY-058a,shadow_diff core,"Diff new vs legacy intended actions","epic-008,P1,risk-med,story,qa",Wave-2-Modules,1,STORY-054b
+STORY-058b,shadow_diff reporting,"Human+JSON divergence report","epic-008,P1,risk-med,story,qa",Wave-2-Modules,0.5,STORY-058a
+STORY-059,Config validation (jsonschema),"Validate config.json/disk_map.json","epic-008,P1,risk-low,story,qa",Wave-2-Modules,1,STORY-011b;STORY-040
+STORY-060,CI workflow,"lint + type + test + coverage + secret-scan","epic-009,P0,risk-low,story,ci",Wave-0-Foundation,1,STORY-001
+STORY-061,deploy/run.sh auto-update,"git ff + re-exec wrapper for any pipeline","epic-009,P1,risk-med,story,ci",Wave-4-Release,1,STORY-018
+STORY-062,Versioning + CHANGELOG,"semver + release notes","epic-009,P2,risk-low,story,ci",Wave-4-Release,0.5,STORY-060
+STORY-063,Single Unraid User Script + runbook,"One entrypoint -> deploy/run.sh <pipeline>","epic-009,P1,risk-med,story,ci",Wave-4-Release,1,STORY-061
+STORY-064,SCHEDULE.md inventory,"Document Unraid User Scripts (what/when)","epic-010,P0,risk-med,story,migration",Wave-0-Foundation,0.5,
+STORY-065a,shadow runner,"Run legacy parallel new report-only","epic-010,P1,risk-med,story,migration",Wave-3-Migration,1,STORY-058b;STORY-064
+STORY-065b,diff capture wiring,"Persist per-module divergences","epic-010,P1,risk-med,story,migration",Wave-3-Migration,0.5,STORY-065a
+STORY-066,Parity gate + cutover checklist,"Per-module activation after >=2 week parity","epic-010,P1,risk-high,story,migration",Wave-4-Release,1,STORY-065b
+STORY-067,Legacy decommission,"Delete 219MB copy + retire scripts after green","epic-010,P2,risk-low,story,migration",Wave-4-Release,0.5,STORY-066
