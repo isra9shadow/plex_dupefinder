@@ -36,6 +36,7 @@ import sys
 import time
 import traceback
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from logging.handlers import RotatingFileHandler
@@ -61,6 +62,9 @@ SCRIPT_DIR = os.path.dirname(os.path.realpath(sys.argv[0]))
 log_filename = os.path.join(SCRIPT_DIR, 'activity.log')
 decision_filename = os.path.join(SCRIPT_DIR, 'decisions.log')
 default_plans_dir = os.path.join(SCRIPT_DIR, 'plans')
+# PASS0 fingerprint cache: lets an opt-in run skip the expensive analyze+poll
+# for items whose underlying files are byte-identical to the last sane analyze.
+pass0_cache_filename = os.path.join(default_plans_dir, 'pass0_fingerprints.json')
 
 # Rotating log so unattended/scheduled runs on large libraries cannot grow
 # activity.log without bound. 10 MiB × 5 backups = 60 MiB ceiling. Level is
@@ -553,33 +557,119 @@ def is_files_stable(file_paths, wait_seconds):
     return (not changes), changes
 
 
+# Within-run memo keyed by (path, mtime_ns, size, hash_bytes). The hash is a pure
+# function of those, so reuse is result-identical — it just avoids re-reading the
+# same file's head+tail in PASS 2 (revalidation re-builds parts) and across the
+# parallel pre-gather. A changed file gets a new mtime/size -> memo miss -> fresh
+# read, so the PASS1↔PASS2 drift check stays correct. Cleared at discovery start.
+_partial_hash_memo = {}
+
+
 def compute_partial_hashes(file_path, hash_bytes=None):
     """
     Cheap consistency hash: SHA-256 of the first N and last N bytes of the
     file plus its size. Used to detect mid-write/transcode between passes.
 
-    Returns dict or None if unreadable.
+    Returns dict or None if unreadable. Memoised within the run (A2-02).
     """
     if hash_bytes is None:
         hash_bytes = int(cfg.get('PARTIAL_HASH_BYTES', 1024 * 1024))
     if not file_path:
         return None
     try:
-        size = os.path.getsize(file_path)
+        st = os.stat(file_path)
+    except OSError as e:
+        log.warning("Partial hash failed for %r: %s", file_path, e)
+        return None
+    size = st.st_size
+    memo_key = (file_path, st.st_mtime_ns, size, hash_bytes)
+    cached = _partial_hash_memo.get(memo_key)
+    if cached is not None:
+        return cached
+    try:
         with open(file_path, 'rb') as f:
             head = f.read(hash_bytes)
             tail = b''
             if size > hash_bytes:
                 f.seek(max(size - hash_bytes, hash_bytes))
                 tail = f.read(hash_bytes)
-        return {
-            'size': size,
-            'head_sha256': hashlib.sha256(head).hexdigest() if head else None,
-            'tail_sha256': hashlib.sha256(tail).hexdigest() if tail else None,
-        }
     except OSError as e:
         log.warning("Partial hash failed for %r: %s", file_path, e)
         return None
+    result = {
+        'size': size,
+        'head_sha256': hashlib.sha256(head).hexdigest() if head else None,
+        'tail_sha256': hashlib.sha256(tail).hexdigest() if tail else None,
+    }
+    _partial_hash_memo[memo_key] = result
+    return result
+
+
+def _item_part_paths(item):
+    """Resolved filesystem paths for every part of a Plex item, ordered and
+    de-duplicated. Tolerant of missing media/parts (returns what it can)."""
+    paths = []
+    try:
+        medias = item.media
+    except Exception:
+        return paths
+    for media in medias or []:
+        for part in getattr(media, 'parts', None) or []:
+            plex_path = getattr(part, 'file', None)
+            if not plex_path:
+                continue
+            fs_path = resolve_fs_path(plex_path)
+            if fs_path not in paths:
+                paths.append(fs_path)
+    return paths
+
+
+def _pass0_fingerprint(item):
+    """
+    Stable content fingerprint for an item's underlying files: sha256 over each
+    part's (resolved path, size, mtime_ns).
+
+    Returns None if the item has no parts or any part is unreadable — a missing
+    fingerprint disables the PASS0 fast-path (fail-safe: we re-analyze rather
+    than risk scoring on changed bytes). Because the fingerprint is derived
+    purely from on-disk bytes (size + mtime), a cache hit proves the file is
+    identical to the last sane analyze, so re-analyzing would be a no-op.
+    """
+    paths = _item_part_paths(item)
+    if not paths:
+        return None
+    h = hashlib.sha256()
+    for fs_path in paths:
+        try:
+            st = os.stat(fs_path)
+        except OSError:
+            return None
+        h.update(("%s|%d|%d\n" % (fs_path, st.st_size, st.st_mtime_ns)).encode('utf-8', 'replace'))
+    return h.hexdigest()
+
+
+def _load_pass0_cache():
+    """Load the PASS0 fingerprint cache (item.key -> {fingerprint,status,last_seen}).
+    Any error yields an empty cache — the cache is an optimisation, never a
+    source of truth."""
+    try:
+        with open(pass0_cache_filename, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_pass0_cache(cache):
+    """Persist the PASS0 fingerprint cache atomically (tmp + replace)."""
+    try:
+        os.makedirs(default_plans_dir, exist_ok=True)
+        tmp = pass0_cache_filename + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(cache, f)
+        os.replace(tmp, pass0_cache_filename)
+    except OSError as e:
+        log.warning("Could not persist PASS0 fingerprint cache: %s", e)
 
 
 ############################################################
@@ -1734,12 +1824,48 @@ def select_keeper(parts):
     return decision
 
 
+def _media_fingerprint(pi):
+    """
+    Stable, decision-relevant identity of a media item (IMP-05). Built ONLY from
+    fields that, if they changed, would legitimately change the keeper decision:
+
+        media_id · file_size · duration (whole seconds) · video_codec · partial_hash
+
+    Deliberately EXCLUDES filename/path (renames are cosmetic), video_bitrate
+    (Plex re-estimates it run-to-run without the file changing) and sub-second
+    duration jitter. A genuine transcode changes size + partial_hash, so the
+    fingerprint still moves; a cosmetic Plex refresh leaves it unchanged. This is
+    the root-cause fix for groups_skipped_inconsistent growth.
+    """
+    part_hashes = []
+    for ex in pi.get('parts_existence', None) or []:
+        ph = ex.get('partial_hash') or {}
+        part_hashes.append('%s:%s' % (ph.get('head_sha256'), ph.get('tail_sha256')))
+    duration_s = int((pi.get('video_duration') or 0) // 1000)
+    raw = '|'.join((
+        str(pi.get('id')),
+        str(pi.get('file_size')),
+        str(duration_s),
+        (pi.get('video_codec') or '').lower(),
+        ','.join(part_hashes),
+    ))
+    return hashlib.sha256(raw.encode('utf-8', 'replace')).hexdigest()
+
+
 def detect_inconsistencies(snapshot_parts, fresh_parts, snapshot_decision, fresh_decision):
     """
     Compare a Pass 1 snapshot to a Pass 2 fresh read.
 
     Returns a list of human-readable diffs. Empty list = consistent.
+
+    Two equivalence strategies for the per-media comparison:
+      * field-by-field with optional bitrate/duration tolerances (default), and
+      * a single stable fingerprint (opt-in INCONSISTENCY_USE_FINGERPRINT) that
+        ignores cosmetic drift by construction — see _media_fingerprint.
+    In BOTH modes, media added/removed, existence flips and a changed keeper
+    always trip inconsistency (those are never cosmetic).
     """
+    use_fingerprint = bool(cfg.get('INCONSISTENCY_USE_FINGERPRINT', False))
     diffs = []
     snap_ids = set(snapshot_parts.keys())
     fresh_ids = set(fresh_parts.keys())
@@ -1754,22 +1880,47 @@ def detect_inconsistencies(snapshot_parts, fresh_parts, snapshot_decision, fresh
     for mid in snap_ids & fresh_ids:
         s = snapshot_parts[mid]
         f = fresh_parts[mid]
+        # Existence flips are always material, in both strategies.
+        if s.get('exists') != f.get('exists'):
+            diffs.append("media %r existence changed: %s → %s"
+                         % (mid, s.get('exists'), f.get('exists')))
+
+        if use_fingerprint:
+            # Single stable-identity check: ignores renames and bitrate jitter by
+            # construction, still catches real content changes (size + hash).
+            if _media_fingerprint(s) != _media_fingerprint(f):
+                diffs.append("media %r fingerprint changed (size/duration/codec/hash)" % mid)
+            continue
+
         if s.get('file') != f.get('file'):
             diffs.append("media %r files changed: %r → %r" % (mid, s.get('file'), f.get('file')))
         if s.get('file_size') != f.get('file_size'):
             diffs.append("media %r size changed: %s → %s"
                          % (mid, s.get('file_size'), f.get('file_size')))
-        if s.get('exists') != f.get('exists'):
-            diffs.append("media %r existence changed: %s → %s"
-                         % (mid, s.get('exists'), f.get('exists')))
         # Duration / bitrate / codec catch Tdarr transcodes, partial writes,
         # and Plex re-analyses that happen between passes.
-        if s.get('video_duration') != f.get('video_duration'):
-            diffs.append("media %r duration changed: %s → %s ms"
-                         % (mid, s.get('video_duration'), f.get('video_duration')))
-        if s.get('video_bitrate') != f.get('video_bitrate'):
-            diffs.append("media %r bitrate changed: %s → %s kbps"
-                         % (mid, s.get('video_bitrate'), f.get('video_bitrate')))
+        #
+        # Optional tolerances (default 0 = strict) absorb cosmetic Plex
+        # re-estimates of bitrate/duration that drift run-to-run WITHOUT the
+        # file changing. They apply ONLY when the part size is identical — a
+        # genuine transcode changes size (and partial hash), both checked
+        # separately above/below, so it still trips inconsistency.
+        size_unchanged = s.get('file_size') == f.get('file_size')
+        dur_tol_ms = float(cfg.get('INCONSISTENCY_DURATION_TOLERANCE_MS', 0) or 0)
+        br_tol_pct = float(cfg.get('INCONSISTENCY_BITRATE_TOLERANCE_PCT', 0) or 0)
+
+        sd, fd = s.get('video_duration'), f.get('video_duration')
+        if sd != fd:
+            dur_delta = abs((sd or 0) - (fd or 0))
+            if not (size_unchanged and dur_tol_ms and dur_delta <= dur_tol_ms):
+                diffs.append("media %r duration changed: %s → %s ms" % (mid, sd, fd))
+
+        sb, fb = s.get('video_bitrate'), f.get('video_bitrate')
+        if sb != fb:
+            br_base = max(abs(sb or 0), abs(fb or 0), 1)
+            br_pct = abs((sb or 0) - (fb or 0)) / br_base * 100.0
+            if not (size_unchanged and br_tol_pct and br_pct <= br_tol_pct):
+                diffs.append("media %r bitrate changed: %s → %s kbps" % (mid, sb, fb))
         if (s.get('video_codec') or '').lower() != (f.get('video_codec') or '').lower():
             diffs.append("media %r video codec changed: %r → %r"
                          % (mid, s.get('video_codec'), f.get('video_codec')))
@@ -2093,6 +2244,35 @@ def build_tabulated(parts, items):
     return headers, data
 
 
+def _prune_old_files(directory, pattern, keep):
+    """Keep the ``keep`` most recent files matching ``pattern``; delete older ones.
+
+    ``keep <= 0`` disables pruning (default — no behaviour change). These are this
+    tool's own JSON outputs (reports/plans), not user media, so this housekeeping
+    is outside INVARIANT I1's scope. Best-effort: errors are swallowed.
+    """
+    if keep <= 0:
+        return 0
+    try:
+        matches = sorted(
+            (os.path.join(directory, n) for n in os.listdir(directory) if fnmatch(n, pattern)),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+    except OSError:
+        return 0
+    removed = 0
+    for old in matches[keep:]:
+        try:
+            os.remove(old)
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        log.info("Pruned %d old file(s) matching %r in %s", removed, pattern, directory)
+    return removed
+
+
 def write_json_report():
     out_dir = (cfg.get('JSON_REPORT_DIR') or '').strip()
     if not out_dir or not os.path.isdir(out_dir):
@@ -2105,6 +2285,8 @@ def write_json_report():
             json.dump(run_report, f, indent=2, default=str)
         log.info("JSON report written to %s", path)
         print("JSON report: %s" % path)
+        _prune_old_files(out_dir, "dupefinder_report_*.json",
+                         int(cfg.get('PLAN_REPORT_RETENTION', 0) or 0))
         return path
     except OSError:
         log.exception("Failed to write JSON report")
@@ -2157,6 +2339,8 @@ def write_plan_file(groups):
             json.dump(plan, f, indent=2, default=str)
         log.info("Discovery plan written to %s", path)
         print("Discovery plan: %s" % path)
+        _prune_old_files(default_plans_dir, "dupefinder_plan_*.json",
+                         int(cfg.get('PLAN_REPORT_RETENTION', 0) or 0))
         return path
     except OSError:
         log.exception("Failed to write discovery plan")
@@ -2235,6 +2419,17 @@ def _build_parts_for_item(item, compute_hashes):
     return parts
 
 
+def _safe_build_parts(item, compute_hashes):
+    """_build_parts_for_item wrapped to never raise — for the read-only parallel
+    pre-gather. On any error it returns None so the serial loop recomputes the
+    item and handles the failure through its existing per-item try/except."""
+    try:
+        return _build_parts_for_item(item, compute_hashes)
+    except Exception:
+        log.exception("Parallel pre-gather failed for key=%r", getattr(item, 'key', None))
+        return None
+
+
 def _skip_group_for_pass0_failure(title, library, item, pass0_status, reason):
     """Build a stub group entry that the rest of the pipeline treats as skipped."""
     return {
@@ -2259,6 +2454,51 @@ def _skip_group_for_pass0_failure(title, library, item, pass0_status, reason):
     }
 
 
+def resolve_execution_mode(cfg):
+    """
+    Collapse the three legacy safety flags into ONE explicit mode (IMP-01):
+
+        AUDIT      — observe only; no files or Plex entries touched
+                     (DRY_RUN=True OR AUDIT_MODE=True)
+        QUARANTINE — act by MOVING the loser to QUARANTINE_DIR (reversible)
+        DELETE     — act by DELETING via Plex (irreversible, no quarantine)
+
+    Pure derivation from the existing flags — does not mutate cfg.
+    """
+    if bool(cfg.get('AUDIT_MODE', False)) or bool(cfg.get('DRY_RUN', True)):
+        return 'AUDIT'
+    return 'QUARANTINE' if bool(cfg.get('QUARANTINE_MODE', True)) else 'DELETE'
+
+
+def apply_execution_mode(cfg):
+    """
+    Single source of truth for the run mode (IMP-01), backward compatible:
+
+      * The IZUMI_EXECUTION_MODE environment variable (set by the platform wrapper)
+        takes priority over the config key, so `run.py ... --dry-run` is honoured.
+      * Else if EXECUTION_MODE (AUDIT|QUARANTINE|DELETE) is set in config, it WINS
+        and the legacy DRY_RUN/AUDIT_MODE/QUARANTINE_MODE flags are normalized from
+        it, so every existing downstream guard keeps working unchanged.
+      * If neither is set, the legacy flags are used exactly as before.
+      * An unrecognised value fails SAFE to AUDIT (observe only).
+
+    Returns the resolved mode string. Mutates cfg only when a mode is supplied.
+    """
+    raw = os.environ.get('IZUMI_EXECUTION_MODE') or cfg.get('EXECUTION_MODE')
+    if raw:
+        mode = str(raw).strip().upper()
+        if mode == 'AUDIT':
+            cfg['DRY_RUN'], cfg['AUDIT_MODE'] = True, True
+        elif mode == 'QUARANTINE':
+            cfg['DRY_RUN'], cfg['AUDIT_MODE'], cfg['QUARANTINE_MODE'] = False, False, True
+        elif mode == 'DELETE':
+            cfg['DRY_RUN'], cfg['AUDIT_MODE'], cfg['QUARANTINE_MODE'] = False, False, False
+        else:
+            log.warning("Invalid EXECUTION_MODE %r — failing safe to AUDIT (observe only)", raw)
+            cfg['DRY_RUN'], cfg['AUDIT_MODE'] = True, True
+    return resolve_execution_mode(cfg)
+
+
 def discovery_pass(sections):
     """
     Pass 1: gather every duplicate group, score, and tentatively decide.
@@ -2270,6 +2510,31 @@ def discovery_pass(sections):
     pre_analyze = bool(cfg.get('PRE_ANALYZE_DUPLICATES', False))
     analyze_timeout = float(cfg.get('ANALYZE_TIMEOUT_SECONDS', 60))
     compute_hashes = bool(cfg.get('PARTIAL_HASH_ENABLED'))
+    _partial_hash_memo.clear()  # fresh per run (A2-02 within-run dedup)
+
+    # Opt-in (default OFF): skip PASS0 analyze+poll for items whose files are
+    # byte-identical to the last sane analyze. Zero behaviour change when off.
+    fp_cache_enabled = pre_analyze and bool(cfg.get('PASS0_FINGERPRINT_CACHE', False))
+    pass0_cache = _load_pass0_cache() if fp_cache_enabled else {}
+    pass0_cache_hits = 0
+    pass0_attempted = 0
+
+    # Opt-in parallel pre-gather (default 1 = serial = current behaviour). The
+    # gather (filesystem stats + scoring) is read-only — "Pure observation" — so
+    # it is safe to run concurrently. PASS0 stays serial (it drives Plex), so the
+    # prefetch only runs when PASS0 is off, i.e. when every dupe is gathered.
+    try:
+        gather_workers = int(cfg.get('DISCOVERY_GATHER_WORKERS', 1) or 1)
+    except (TypeError, ValueError):
+        gather_workers = 1
+    gather_prefetched = 0
+
+    # Per-phase wall-clock breakdown (read-only profiling, IMP-03): so the
+    # operator can see where discovery time goes — Plex search vs PASS0
+    # analyze+poll vs gather (filesystem stats + scoring).
+    t_get_dupes = 0.0
+    t_pass0 = 0.0
+    t_gather = 0.0
 
     suffix = " (with PASS 0 metadata refresh)" if pre_analyze else ""
     print("\n[PASS 1/2] Discovery — gathering duplicates and scoring%s..." % suffix)
@@ -2278,7 +2543,9 @@ def discovery_pass(sections):
 
     for section in sections:
         try:
+            _t = time.monotonic()
             dupes = get_dupes(section)
+            t_get_dupes += time.monotonic() - _t
         except Exception as e:
             log.exception("Failed to fetch dupes for section %r", section)
             run_report['errors'].append({'stage': 'get_dupes', 'section': section})
@@ -2287,32 +2554,83 @@ def discovery_pass(sections):
             continue
         print("  found %d dupe groups in %r" % (len(dupes), section))
 
+        # Best-effort parallel pre-gather (read-only). Maps id(item) -> parts.
+        # The serial loop below still owns decisions, ordering and error
+        # handling; a miss simply recomputes that item inline.
+        pre_gathered = {}
+        if gather_workers > 1 and not pre_analyze and len(dupes) > 1:
+            _tg0 = time.monotonic()
+            with ThreadPoolExecutor(max_workers=gather_workers) as pool:
+                computed = list(pool.map(
+                    lambda it: (id(it), _safe_build_parts(it, compute_hashes)), dupes))
+            pre_gathered = {key: parts for key, parts in computed if parts is not None}
+            gather_prefetched += len(pre_gathered)
+            t_gather += time.monotonic() - _tg0
+            log.info("PASS1 PREGATHER section=%r workers=%d prefetched=%d/%d",
+                     section, gather_workers, len(pre_gathered), len(dupes))
+
         for item in dupes:
             try:
                 title = _item_title(item)
 
                 pass0_status = None
                 if pre_analyze:
-                    item, pass0_status = refresh_plex_item(item, analyze_timeout)
-                    log.info("PASS0 group=%r status=%s changed_fields=%d",
-                             title, pass0_status.get('status'),
-                             len(pass0_status.get('changed_fields') or []))
-                    if not pass0_status.get('success'):
-                        reason = pass0_status.get('reason') or pass0_status.get('status')
-                        log.warning("PASS0 SKIP group=%r status=%s reason=%r",
-                                    title, pass0_status.get('status'), reason)
-                        print("  [PASS0] skip %r — %s" % (title, reason))
-                        groups.append(_skip_group_for_pass0_failure(
-                            title, section, item, pass0_status, reason))
-                        continue
-                    if pass0_status.get('status') == 'sane_unchanged':
-                        # Visible note: scoring will run on data we could not
-                        # prove is fresh. See refresh_plex_item docstring.
-                        print("  [PASS0] %r metadata sane but unchanged (potentially stale)" % title)
+                    _tp = time.monotonic()
+                    fp = _pass0_fingerprint(item) if fp_cache_enabled else None
+                    cached = pass0_cache.get(item.key) if fp_cache_enabled else None
+                    if fp and cached and cached.get('fingerprint') == fp:
+                        # Files byte-identical since the last sane analyze: a
+                        # re-analyze is provably a no-op, so skip it.
+                        pass0_cache_hits += 1
+                        pass0_status = {
+                            'attempted': False,
+                            'success': True,
+                            'status': 'cached_sane_unchanged',
+                            'reason': 'fingerprint match — files byte-identical '
+                                      'since last sane analyze; re-analyze skipped',
+                            'changed_fields': [],
+                            'from_cache': True,
+                            'timeout_seconds': analyze_timeout,
+                        }
+                        log.info("PASS0 CACHE HIT group=%r key=%r — analyze skipped",
+                                 title, item.key)
+                    else:
+                        pass0_attempted += 1
+                        item, pass0_status = refresh_plex_item(item, analyze_timeout)
+                        log.info("PASS0 group=%r status=%s changed_fields=%d",
+                                 title, pass0_status.get('status'),
+                                 len(pass0_status.get('changed_fields') or []))
+                        if not pass0_status.get('success'):
+                            reason = pass0_status.get('reason') or pass0_status.get('status')
+                            log.warning("PASS0 SKIP group=%r status=%s reason=%r",
+                                        title, pass0_status.get('status'), reason)
+                            print("  [PASS0] skip %r — %s" % (title, reason))
+                            groups.append(_skip_group_for_pass0_failure(
+                                title, section, item, pass0_status, reason))
+                            t_pass0 += time.monotonic() - _tp
+                            continue
+                        if pass0_status.get('status') == 'sane_unchanged':
+                            # Visible note: scoring will run on data we could not
+                            # prove is fresh. See refresh_plex_item docstring.
+                            print("  [PASS0] %r metadata sane but unchanged (potentially stale)"
+                                  % title)
+                        # Record fingerprint so the next run can fast-path this
+                        # item while its bytes stay identical. Only on success.
+                        if fp_cache_enabled and fp:
+                            pass0_cache[item.key] = {
+                                'fingerprint': fp,
+                                'status': pass0_status.get('status'),
+                                'last_seen': datetime.now(timezone.utc).isoformat(),
+                            }
+                    t_pass0 += time.monotonic() - _tp
 
                 log.info("PASS1 gather title=%r library=%r key=%r", title, section, item.key)
-                parts = _build_parts_for_item(item, compute_hashes)
+                _tg = time.monotonic()
+                parts = pre_gathered.get(id(item))
+                if parts is None:  # miss / prefetch disabled / prefetch failed
+                    parts = _build_parts_for_item(item, compute_hashes)
                 decision = select_keeper(parts)
+                t_gather += time.monotonic() - _tg
                 group = {
                     'title': title,
                     'library': section,
@@ -2339,6 +2657,28 @@ def discovery_pass(sections):
                 record_failure(classify_exception(e), 'failed to gather/score item',
                                media_id=getattr(item, 'title', None), exc=e,
                                stage='gather_item')
+
+    if fp_cache_enabled:
+        _save_pass0_cache(pass0_cache)
+        total_pass0 = pass0_cache_hits + pass0_attempted
+        print("  [PASS0 cache] %d/%d groups fast-pathed (analyze skipped)"
+              % (pass0_cache_hits, total_pass0))
+        log.info("PASS0 CACHE summary hits=%d attempted=%d total=%d",
+                 pass0_cache_hits, pass0_attempted, total_pass0)
+
+    breakdown = {
+        'get_dupes_seconds': round(t_get_dupes, 2),
+        'pass0_seconds': round(t_pass0, 2),
+        'gather_seconds': round(t_gather, 2),
+        'pass0_cache_hits': pass0_cache_hits,
+        'gather_workers': gather_workers,
+        'gather_prefetched': gather_prefetched,
+    }
+    run_report['phases']['discovery_breakdown'] = breakdown
+    print("  [profile] discovery breakdown — get_dupes %.2fs | pass0 %.2fs | gather %.2fs"
+          % (t_get_dupes, t_pass0, t_gather))
+    log.info("PASS1 BREAKDOWN get_dupes=%.2fs pass0=%.2fs gather=%.2fs cache_hits=%d",
+             t_get_dupes, t_pass0, t_gather, pass0_cache_hits)
     return groups
 
 
@@ -2675,6 +3015,16 @@ if __name__ == "__main__":
 
     print("Initialized — run_id=%s" % run_id)
 
+    # IMP-01: resolve ONE explicit ExecutionMode. If EXECUTION_MODE is set it is
+    # the single source of truth and normalizes the legacy flags; otherwise the
+    # legacy flags are honoured unchanged (backward compatible).
+    execution_mode = apply_execution_mode(cfg)
+    run_report['execution_mode'] = execution_mode
+    print("EXECUTION_MODE (resolved): %s" % execution_mode)
+    log.info("EXECUTION_MODE resolved=%s (dry_run=%s audit=%s quarantine=%s)",
+             execution_mode, cfg.get('DRY_RUN'), cfg.get('AUDIT_MODE'),
+             cfg.get('QUARANTINE_MODE'))
+
     audit_mode = bool(cfg.get('AUDIT_MODE', False))
     if audit_mode:
         # Force DRY_RUN at runtime so every downstream guard observes it.
@@ -2749,9 +3099,12 @@ if __name__ == "__main__":
     pass0_failed = sum(1 for g in groups
                        if (g.get('pass0_status') or {}).get('attempted')
                        and not (g.get('pass0_status') or {}).get('success'))
+    pass0_fast_pathed = sum(1 for g in groups
+                            if (g.get('pass0_status') or {}).get('from_cache'))
     run_report['phases']['pass0'] = {
         'enabled': pre_analyze_enabled,
         'groups_attempted': pass0_attempted,
+        'groups_fast_pathed': pass0_fast_pathed,
         'groups_sane_and_changed': pass0_changed,
         'groups_sane_unchanged': pass0_unchanged,
         'groups_failed': pass0_failed,

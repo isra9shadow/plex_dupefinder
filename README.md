@@ -8,6 +8,30 @@ A safety-first, quarantine-by-default duplicate manager for Plex Media Server.
 
 ---
 
+## Platform (izumi) — `run.py` is the unified entrypoint
+
+This repo has grown into **izumi**, a modular Python homelab platform. The dedupe
+engine below is now one module behind a single CLI:
+
+```bash
+python run.py health                  # platform healthcheck
+python run.py plex_dupefinder         # run the dedupe engine (this README)
+python run.py media_integrity --dry-run
+python run.py <pipeline>              # e.g. monitor / inventory / daily / weekly
+```
+
+- `run.py --dry-run` / `--audit` are propagated to the engine via
+  `IZUMI_EXECUTION_MODE` (LIVE maps to QUARANTINE — the platform never triggers an
+  irreversible delete). Run a module directly with `python plex_dupefinder.py` and
+  its own `config.json` governs it.
+- Architecture, contracts and the module list live in `AGENTS.md`, `AI_CONTEXT.md`
+  and `core/CONTRACT.md`. Items marked there as future work may not exist yet — the
+  source of truth is the registered module set (`python run.py <name>`).
+
+The rest of this README documents the dedupe engine itself.
+
+---
+
 ## Overview
 
 Plex libraries accumulate duplicate media entries over time — re-imports after drive migrations, Radarr upgrades, Tdarr transcodes landing alongside originals, or metadata mismatches that trick Plex into treating the same file as two separate items. Left unmanaged, these duplicates waste storage and clutter your library. plex_dupefinder automates the cleanup.
