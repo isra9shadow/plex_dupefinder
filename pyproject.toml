@@ -1,0 +1,59 @@
+# izumi platform tooling config (Sprint 0).
+# Scoped to the NEW platform code (core/, modules/, integrations/, adapters/,
+# tests/). The legacy root files (plex_dupefinder.py, config.py, tools/) are
+# excluded until they are migrated onto core in later sprints.
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["core", "modules", "integrations", "adapters", "tests"]
+extend-exclude = [
+    "plex_dupefinder.py",
+    "config.py",
+    "tools",
+    "tests/conftest.py",
+    "tests/regression/test_observability.py",
+    "tests/regression/test_legacy_safety.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "S", "RUF"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may use assert and may construct secret-like fixture strings.
+"tests/**" = ["S101", "S105", "S106"]
+# adapters/command.py is THE single audited subprocess boundary (list args, no
+# shell, read-only callers). Bandit's subprocess warnings are expected here only.
+"adapters/command.py" = ["S603", "S607"]
+# integrations/* are the audited outbound-HTTP boundary (URLs built from config).
+"integrations/arr.py" = ["S310"]
+"integrations/tmdb.py" = ["S310"]
+"integrations/qbittorrent.py" = ["S310"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["core", "adapters", "integrations", "modules", "run.py"]
+# Legacy untyped modules are not part of the platform yet.
+exclude = "(^|/)(plex_dupefinder|config)\\.py$|^tools/"
+
+[tool.pytest.ini_options]
+# Platform suites + the legacy-engine regression suite (tests/regression), which
+# exercises plex_dupefinder.py (the only code that moves/deletes). addopts omits
+# --cov so a bare `pytest` works without pytest-cov; CI passes --cov explicitly.
+testpaths = ["tests/unit", "tests/integration", "tests/security", "tests/smoke", "tests/regression"]
+addopts = "-q --strict-markers"
+
+[tool.coverage.run]
+source = ["core"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "pragma: no cover",
+]

@@ -1,0 +1,44 @@
+{
+  "safety": {
+    "mode": "dry_run",
+    "audit": false,
+    "min_file_age_hours": 24,
+    "stability_check_seconds": 2.0,
+    "max_size_ratio": 5.0,
+    "quarantine_dir": "/mnt/user/Temp/izumi_quarantine",
+    "retention_days": 7,
+    "auto_purge": false
+  },
+  "logging": { "level": "INFO", "dir": "/mnt/cache/appdata/izumi/logs", "rotate_mb": 10, "backups": 5 },
+  "reporting": { "dir": "/mnt/cache/appdata/izumi/reports", "metrics": true },
+  "notify": {
+    "enabled": false,
+    "level": "fail",
+    "provider": "telegram",
+    "token_ref": "IZUMI_TELEGRAM_BOT_TOKEN",
+    "chat_id_ref": "IZUMI_TELEGRAM_CHAT_ID"
+  },
+  "paths": {
+    "media_root": "/mnt/user/media",
+    "movies_root": "/mnt/user/media/Peliculas",
+    "series_root": "/mnt/user/media/series TV",
+    "downloads_root": "/mnt/user/Downloads"
+  },
+  "pipelines": {
+    "monitor": ["downloads_watchdog", "disk_inventory"],
+    "inventory": ["docker_inventory", "disk_inventory", "share_inventory", "network_inventory", "dashboard"],
+    "daily": ["media_integrity", "arr_orphans", "dashboard"],
+    "weekly": ["plex_dupefinder"]
+  },
+  "integrations": {
+    "radarr": { "url": "http://192.168.6.62:7878", "api_key_ref": "RADARR_API_KEY" },
+    "sonarr": { "url": "http://192.168.6.62:8989", "api_key_ref": "SONARR_API_KEY" },
+    "qbittorrent": {
+      "url": "http://192.168.6.62:8080",
+      "username_ref": "QBIT_USERNAME",
+      "password_ref": "QBIT_PASSWORD",
+      "stalled_hours": 48
+    },
+    "tmdb": { "bearer_ref": "TMDB_BEARER_TOKEN" }
+  }
+}

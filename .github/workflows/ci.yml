@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main, develop]
+  pull_request:
+    branches: [master, main, develop]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tooling
+        run: pip install ruff==0.6.9 mypy==1.11.2 pytest pytest-cov jsonschema pip-audit
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (ruff)
+        run: ruff format --check .
+
+      - name: Type check (mypy --strict, platform)
+        run: mypy
+
+      - name: Tests + coverage gate (>90% on core)
+        run: pytest --cov=core --cov-report=term-missing --cov-fail-under=90
+
+      - name: Legacy engine coverage floor (no regression below 50%)
+        run: pytest tests/regression --cov=plex_dupefinder --cov-report=term-missing --cov-fail-under=50
+
+      - name: Dependency audit (advisory, non-blocking)
+        continue-on-error: true
+        run: pip-audit -r requirements.txt
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
