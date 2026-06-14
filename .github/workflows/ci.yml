@@ -31,8 +31,8 @@ jobs:
       - name: Tests + coverage gate (>90% on core)
         run: pytest --cov=core --cov-report=term-missing --cov-fail-under=90
 
-      - name: Legacy engine coverage floor (no regression below 60%)
-        run: pytest tests/regression --cov=plex_dupefinder --cov-report=term-missing --cov-fail-under=60
+      - name: Legacy engine coverage floor (no regression below 70%)
+        run: pytest tests/regression --cov=plex_dupefinder --cov-report=term-missing --cov-fail-under=70
 
       - name: Dependency audit (advisory, non-blocking)
         continue-on-error: true

@@ -158,8 +158,13 @@ def test_classify_exception_unrelated_is_unknown():
 
 def test_record_failure_buckets_known_category(report, capsys):
     pd.record_failure(
-        "MOVE_FAILED", "boom", src="/s", dest="/d", exc=OSError("x"),
-        media_id=7, stage="quarantine",
+        "MOVE_FAILED",
+        "boom",
+        src="/s",
+        dest="/d",
+        exc=OSError("x"),
+        media_id=7,
+        stage="quarantine",
     )
     assert report["failure_summary"]["MOVE_FAILED"] == 1
     assert len(report["failures"]) == 1
@@ -344,9 +349,7 @@ def test_remove_plex_metadata_success(cfg, report, monkeypatch):
 def test_remove_plex_metadata_http_error(cfg, report, monkeypatch):
     cfg["PLEX_SERVER"] = "http://plex:32400"
     cfg["PLEX_TOKEN"] = "TOK"
-    monkeypatch.setattr(
-        pd.requests, "delete", lambda *a, **k: FakeResponse(404, text="not found")
-    )
+    monkeypatch.setattr(pd.requests, "delete", lambda *a, **k: FakeResponse(404, text="not found"))
     ok, detail = pd.remove_plex_metadata("/library/metadata/1", 99)
     assert ok is False
     assert detail.startswith("http_404")
@@ -420,9 +423,7 @@ def test_quarantine_files_missing_source_records_failure(cfg, report, tmp_path):
     cfg["QUARANTINE_DIR"] = str(qdir)
     ghost = tmp_path / "src" / "Movies" / "Ghost (2000)" / "ghost.mkv"
 
-    out = pd.quarantine_files(
-        {"id": 9, "file": [str(ghost)]}, title="Ghost", library_name="Movies"
-    )
+    out = pd.quarantine_files({"id": 9, "file": [str(ghost)]}, title="Ghost", library_name="Movies")
     assert out["moved"] == []
     assert len(out["errors"]) == 1
     err = out["errors"][0]
@@ -442,9 +443,7 @@ def test_quarantine_files_collision_suffixes_library(cfg, report, tmp_path):
     existing.write_bytes(b"old")
     src = _make_source(tmp_path)
 
-    out = pd.quarantine_files(
-        {"id": 5, "file": [str(src)]}, title="Dune", library_name="Movies"
-    )
+    out = pd.quarantine_files({"id": 5, "file": [str(src)]}, title="Dune", library_name="Movies")
     assert out["errors"] == []
     dest = out["moved"][0]
     # Top-level folder is suffixed with the upper-cased, sanitised library name.
