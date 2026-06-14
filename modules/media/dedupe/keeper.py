@@ -135,8 +135,7 @@ def select_keeper(parts: Parts, policy: KeeperPolicy) -> dict[str, object]:
 
     if policy.require_local_fs_access:
         any_local = any(
-            any(ex.get("local_check") is not None for ex in _existence(pi))
-            for pi in parts.values()
+            any(ex.get("local_check") is not None for ex in _existence(pi)) for pi in parts.values()
         )
         if not any_local:
             decision["skip"] = True
@@ -153,8 +152,7 @@ def select_keeper(parts: Parts, policy: KeeperPolicy) -> dict[str, object]:
         if not sane:
             decision["skip"] = True
             decision["skip_reason"] = (
-                f"candidate {mid!r} has invalid metadata: {why} "
-                "(Plex analysis may be incomplete)"
+                f"candidate {mid!r} has invalid metadata: {why} (Plex analysis may be incomplete)"
             )
             decision["reason"] = "metadata sanity check failed"
             return decision

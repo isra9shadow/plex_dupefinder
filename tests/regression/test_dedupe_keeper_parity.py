@@ -50,12 +50,23 @@ def _part(**over):
 
 # --- representative parts batteries --------------------------------------
 
+
 def _clear_winner():
     return {
-        1: _part(id=1, score=8000, file_size=12_000_000_000,
-                 file=["/m/a.mkv"], parts_existence=[_ex(file="/m/a.mkv")]),
-        2: _part(id=2, score=3000, file_size=10_000_000_000,
-                 file=["/m/b.mkv"], parts_existence=[_ex(file="/m/b.mkv")]),
+        1: _part(
+            id=1,
+            score=8000,
+            file_size=12_000_000_000,
+            file=["/m/a.mkv"],
+            parts_existence=[_ex(file="/m/a.mkv")],
+        ),
+        2: _part(
+            id=2,
+            score=3000,
+            file_size=10_000_000_000,
+            file=["/m/b.mkv"],
+            parts_existence=[_ex(file="/m/b.mkv")],
+        ),
     }
 
 
@@ -70,35 +81,64 @@ def _near_tie():
 def _size_ratio_trip():
     # keeper (highest score) is tiny vs a sibling -> ratio guard trips.
     return {
-        1: _part(id=1, score=9000, file_size=1_000_000_000,
-                 file=["/m/keeper.mkv"], parts_existence=[_ex(file="/m/keeper.mkv")]),
-        2: _part(id=2, score=1000, file_size=50_000_000_000,
-                 file=["/m/huge.mkv"], parts_existence=[_ex(file="/m/huge.mkv")]),
+        1: _part(
+            id=1,
+            score=9000,
+            file_size=1_000_000_000,
+            file=["/m/keeper.mkv"],
+            parts_existence=[_ex(file="/m/keeper.mkv")],
+        ),
+        2: _part(
+            id=2,
+            score=1000,
+            file_size=50_000_000_000,
+            file=["/m/huge.mkv"],
+            parts_existence=[_ex(file="/m/huge.mkv")],
+        ),
     }
 
 
 def _size_ratio_ok():
     return {
-        1: _part(id=1, score=9000, file_size=12_000_000_000,
-                 file=["/m/keeper.mkv"], parts_existence=[_ex(file="/m/keeper.mkv")]),
-        2: _part(id=2, score=1000, file_size=10_000_000_000,
-                 file=["/m/other.mkv"], parts_existence=[_ex(file="/m/other.mkv")]),
+        1: _part(
+            id=1,
+            score=9000,
+            file_size=12_000_000_000,
+            file=["/m/keeper.mkv"],
+            parts_existence=[_ex(file="/m/keeper.mkv")],
+        ),
+        2: _part(
+            id=2,
+            score=1000,
+            file_size=10_000_000_000,
+            file=["/m/other.mkv"],
+            parts_existence=[_ex(file="/m/other.mkv")],
+        ),
     }
 
 
 def _young_cooldown():
     # one part below the 24h default cooldown.
     return {
-        1: _part(id=1, score=8000, file=["/m/a.mkv"],
-                 parts_existence=[_ex(file="/m/a.mkv", age_hours=2.5)]),
-        2: _part(id=2, score=3000, file=["/m/b.mkv"],
-                 parts_existence=[_ex(file="/m/b.mkv", age_hours=500.0)]),
+        1: _part(
+            id=1,
+            score=8000,
+            file=["/m/a.mkv"],
+            parts_existence=[_ex(file="/m/a.mkv", age_hours=2.5)],
+        ),
+        2: _part(
+            id=2,
+            score=3000,
+            file=["/m/b.mkv"],
+            parts_existence=[_ex(file="/m/b.mkv", age_hours=500.0)],
+        ),
     }
 
 
 def _single():
-    return {7: _part(id=7, score=4242, file=["/m/only.mkv"],
-                     parts_existence=[_ex(file="/m/only.mkv")])}
+    return {
+        7: _part(id=7, score=4242, file=["/m/only.mkv"], parts_existence=[_ex(file="/m/only.mkv")])
+    }
 
 
 def _all_missing():
@@ -110,38 +150,58 @@ def _all_missing():
 
 def _one_missing():
     return {
-        1: _part(id=1, score=8000, exists=False, file=["/m/a.mkv"],
-                 parts_existence=[_ex(file="/m/a.mkv", exists=False)]),
-        2: _part(id=2, score=3000, file=["/m/b.mkv"],
-                 parts_existence=[_ex(file="/m/b.mkv")]),
+        1: _part(
+            id=1,
+            score=8000,
+            exists=False,
+            file=["/m/a.mkv"],
+            parts_existence=[_ex(file="/m/a.mkv", exists=False)],
+        ),
+        2: _part(id=2, score=3000, file=["/m/b.mkv"], parts_existence=[_ex(file="/m/b.mkv")]),
     }
 
 
 def _bad_metadata():
     return {
-        1: _part(id=1, score=8000, video_codec="Unknown",
-                 file=["/m/a.mkv"], parts_existence=[_ex(file="/m/a.mkv")]),
-        2: _part(id=2, score=3000, file=["/m/b.mkv"],
-                 parts_existence=[_ex(file="/m/b.mkv")]),
+        1: _part(
+            id=1,
+            score=8000,
+            video_codec="Unknown",
+            file=["/m/a.mkv"],
+            parts_existence=[_ex(file="/m/a.mkv")],
+        ),
+        2: _part(id=2, score=3000, file=["/m/b.mkv"], parts_existence=[_ex(file="/m/b.mkv")]),
     }
 
 
 def _zero_duration():
     return {
-        1: _part(id=1, score=8000, video_duration=0,
-                 file=["/m/a.mkv"], parts_existence=[_ex(file="/m/a.mkv")]),
-        2: _part(id=2, score=3000, file=["/m/b.mkv"],
-                 parts_existence=[_ex(file="/m/b.mkv")]),
+        1: _part(
+            id=1,
+            score=8000,
+            video_duration=0,
+            file=["/m/a.mkv"],
+            parts_existence=[_ex(file="/m/a.mkv")],
+        ),
+        2: _part(id=2, score=3000, file=["/m/b.mkv"], parts_existence=[_ex(file="/m/b.mkv")]),
     }
 
 
 def _no_local_access():
     # every existence entry has local_check=None -> fs not reachable.
     return {
-        1: _part(id=1, score=8000, file=["/m/a.mkv"],
-                 parts_existence=[_ex(file="/m/a.mkv", local_check=None, plex_check=True)]),
-        2: _part(id=2, score=3000, file=["/m/b.mkv"],
-                 parts_existence=[_ex(file="/m/b.mkv", local_check=None, plex_check=True)]),
+        1: _part(
+            id=1,
+            score=8000,
+            file=["/m/a.mkv"],
+            parts_existence=[_ex(file="/m/a.mkv", local_check=None, plex_check=True)],
+        ),
+        2: _part(
+            id=2,
+            score=3000,
+            file=["/m/b.mkv"],
+            parts_existence=[_ex(file="/m/b.mkv", local_check=None, plex_check=True)],
+        ),
     }
 
 
@@ -157,15 +217,21 @@ def _multi_part():
     # a media item with two physical parts; youngest age drives the cooldown.
     return {
         1: _part(
-            id=1, score=8000, file=["/m/a-cd1.mkv", "/m/a-cd2.mkv"],
+            id=1,
+            score=8000,
+            file=["/m/a-cd1.mkv", "/m/a-cd2.mkv"],
             file_size=12_000_000_000,
             parts_existence=[
                 _ex(file="/m/a-cd1.mkv", age_hours=900.0),
                 _ex(file="/m/a-cd2.mkv", age_hours=3.0),
             ],
         ),
-        2: _part(id=2, score=3000, file=["/m/b.mkv"],
-                 parts_existence=[_ex(file="/m/b.mkv", age_hours=800.0)]),
+        2: _part(
+            id=2,
+            score=3000,
+            file=["/m/b.mkv"],
+            parts_existence=[_ex(file="/m/b.mkv", age_hours=800.0)],
+        ),
     }
 
 
