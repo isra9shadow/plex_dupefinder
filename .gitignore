@@ -70,3 +70,14 @@ pip-selfcheck.json
 
 # Venv
 venv/
+
+# --- izumi platform (Sprint 0) ---
+# Secrets: .env is local; only the template is versioned.
+.env
+!.env.example
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+coverage.xml
+# Layered platform config lives under config/ (local, like config.json)
+/config/config.json
