@@ -15,8 +15,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from core.config import Config
-from core.errors import QuarantineError
-from core.types import PurgeResult, QuarantineEntry
+from core.errors import QuarantineError, SafetyError, ValidationError
+from core.types import ActionRecord, PurgeResult, QuarantineEntry
 
 _SIDECAR_SUFFIX = ".izumi.json"
 
@@ -102,6 +102,31 @@ class Fs:
         shutil.move(str(path), str(dest))
         sidecar.write_text(json.dumps(asdict(entry), indent=2), encoding="utf-8")
         return entry
+
+    def relocate(self, src: Path, dest: Path, *, reason: str) -> ActionRecord:
+        """Move a kept file to a new in-library path (reorganize), never clobbering.
+
+        The second sanctioned mover besides ``quarantine`` (INVARIANT I1): it
+        restructures a correctly-identified media file into its canonical
+        Movies/Series path. It refuses to overwrite an existing ``dest``
+        (``SafetyError`` — never destroy user data), never deletes, and honours
+        ``dry_run`` (returns the planned ``ActionRecord`` without touching disk).
+        ``reason`` documents intent for the caller's audit log.
+        """
+        if not src.exists():
+            raise ValidationError(f"relocate source missing: {src}")
+        if src.resolve() == dest.resolve():
+            raise ValidationError(f"relocate src and dest are identical: {src}")
+        if dest.exists():
+            raise SafetyError(f"relocate would overwrite existing path: {dest}")
+        record = ActionRecord(
+            action="relocate", src=str(src), dest=str(dest), bytes=_item_size(src)
+        )
+        if self._dry_run:
+            return record
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dest))
+        return record
 
     def restore(self, entry: QuarantineEntry) -> Path:
         """Move a quarantined item back to its original path."""

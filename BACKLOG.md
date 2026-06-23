@@ -67,6 +67,16 @@
 | ID | Objetivo | Riesgo | Esf | Deps | Criterios de aceptación | Archivos | Par |
 |---|---|---|---|---|---|---|---|
 | G-01 | Migrar `modules/plex_dupefinder.py` sobre core | 🟡 | M | B-01,B-02,B-05 | suite actual pasa; acciones vía core/fs | `modules/plex_dupefinder.py` | SI |
+| G-02 | `modules/media/organizer.py` (cleanup→cuarentena + Gemini identify + relocate opt-in) — **ENTREGADO** (ADR-0012) | 🔴 | M | B-05,C-04? | cleanup vía core/fs; plan confident/needs_review; relocate report-only | `modules/media/organizer.py`, `core/fs.py` | SI |
+
+#### Follow-ups del organizer (G-02)
+| ID | Objetivo | Riesgo | Esf | Deps | Criterios de aceptación | Archivos | Par |
+|---|---|---|---|---|---|---|---|
+| G-03 | Verificación de títulos de Gemini contra TMDb/TVmaze (reduce falsos del modelo antes de `confident`) | 🟡 | M | G-02,C-04 | toda sugerencia `confident` cruzada con proveedor; desajuste → `needs_review` | `modules/media/organizer.py`, `integrations/tmdb.py` | SI |
+| G-04 | Ventana de paridad del organizer → activar `integrations.gemini.apply` tras ≥2 sem de planes correctos | 🔴 | S | G-02 | diff de planes estable 2 sem; flip de flag documentado | `config/`, `docs/` | NO (+2 sem) |
+| G-05 | Tests del organizer (cleanup→cuarentena, plan split por umbral, `relocate` no-overwrite→`SafetyError`) | 🟡 | S | G-02,I-01 | fakes de Gemini/FS; sin red; cubre relocate collision | `tests/unit/test_organizer.py`, `tests/unit/test_fs_relocate.py` | SI |
+| G-06 | `core/fs.relocate` — endurecer (containment del destino bajo movies/series roots, colisión por uuid) | 🔴 | S | G-02 | destino contenido en root configurado; colisión mismo-ms resuelta | `core/fs.py`+test | SI |
+| G-07 | Manejo de cuota/rate-limit free-tier de Gemini (backoff + reanudar plan; items sin respuesta → `needs_review`) | 🟡 | S | G-02 | 429/timeout no aborta el run; se reanuda por batch | `integrations/gemini.py`, `modules/media/organizer.py` | SI |
 
 ### EPIC-H · Observabilidad & despliegue
 | ID | Objetivo | Riesgo | Esf | Deps | Criterios de aceptación | Archivos | Par |
