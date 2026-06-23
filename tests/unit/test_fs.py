@@ -175,6 +175,47 @@ def test_relocate_identical_src_dest_raises(tmp_path: Path) -> None:
         Fs(_cfg(tmp_path / "q"), dry_run=False).relocate(src, src, reason="x")
 
 
+def test_relocate_accepts_dest_inside_allowed_root(tmp_path: Path) -> None:
+    src = tmp_path / "manuales" / "Dune.2021.mkv"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"data")
+    movies = tmp_path / "Movies"
+    dest = movies / "Dune (2021)" / "Dune (2021).mkv"
+    rec = Fs(_cfg(tmp_path / "q"), dry_run=False).relocate(
+        src, dest, reason="organize", allowed_roots=[movies, tmp_path / "Series"]
+    )
+    assert dest.exists()
+    assert not src.exists()
+    assert rec.dest == str(dest)
+
+
+def test_relocate_rejects_dest_outside_allowed_roots(tmp_path: Path) -> None:
+    src = tmp_path / "manuales" / "Dune.2021.mkv"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"data")
+    movies = tmp_path / "Movies"
+    # A hallucinated traversal target that escapes every allowed root.
+    dest = tmp_path / "etc" / "passwd.mkv"
+    with pytest.raises(SafetyError):
+        Fs(_cfg(tmp_path / "q"), dry_run=False).relocate(
+            src, dest, reason="organize", allowed_roots=[movies, tmp_path / "Series"]
+        )
+    assert src.exists()  # source untouched
+    assert not dest.exists()  # nothing written outside the roots
+
+
+def test_relocate_none_allowed_roots_unchanged(tmp_path: Path) -> None:
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"data")
+    dest = tmp_path / "anywhere" / "a.mkv"
+    rec = Fs(_cfg(tmp_path / "q"), dry_run=False).relocate(
+        src, dest, reason="organize", allowed_roots=None
+    )
+    assert dest.exists()
+    assert not src.exists()
+    assert rec.dest == str(dest)
+
+
 def test_quarantine_and_purge_directory(tmp_path: Path) -> None:
     show = tmp_path / "show"
     (show / "s01").mkdir(parents=True)

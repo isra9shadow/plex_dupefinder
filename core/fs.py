@@ -11,6 +11,7 @@ import json
 import shutil
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 
@@ -28,6 +29,19 @@ def _ensure_within(base: Path, target: Path) -> None:
         target.resolve().relative_to(base.resolve())
     except ValueError as exc:
         raise QuarantineError(f"path {target} escapes quarantine dir {base}") from exc
+
+
+def _within_any(target: Path, roots: Sequence[Path]) -> bool:
+    """True iff ``target`` resolves inside at least one of the resolved ``roots``
+    (containment guard for relocate, mirroring ``_ensure_within``)."""
+    resolved = target.resolve()
+    for root in roots:
+        try:
+            resolved.relative_to(root.resolve())
+        except ValueError:
+            continue
+        return True
+    return False
 
 
 def _dir_size(path: Path) -> int:
@@ -103,7 +117,14 @@ class Fs:
         sidecar.write_text(json.dumps(asdict(entry), indent=2), encoding="utf-8")
         return entry
 
-    def relocate(self, src: Path, dest: Path, *, reason: str) -> ActionRecord:
+    def relocate(
+        self,
+        src: Path,
+        dest: Path,
+        *,
+        reason: str,
+        allowed_roots: Sequence[Path] | None = None,
+    ) -> ActionRecord:
         """Move a kept file to a new in-library path (reorganize), never clobbering.
 
         The second sanctioned mover besides ``quarantine`` (INVARIANT I1): it
@@ -112,11 +133,18 @@ class Fs:
         (``SafetyError`` — never destroy user data), never deletes, and honours
         ``dry_run`` (returns the planned ``ActionRecord`` without touching disk).
         ``reason`` documents intent for the caller's audit log.
+
+        When ``allowed_roots`` is provided (non-empty), the resolved ``dest`` must
+        live inside at least one of the resolved roots, else ``SafetyError`` — this
+        stops a misidentified/hallucinated target (``../../etc``-style) from
+        escaping the intended media roots. When None/empty, behaviour is unchanged.
         """
         if not src.exists():
             raise ValidationError(f"relocate source missing: {src}")
         if src.resolve() == dest.resolve():
             raise ValidationError(f"relocate src and dest are identical: {src}")
+        if allowed_roots and not _within_any(dest, allowed_roots):
+            raise SafetyError(f"relocate dest escapes allowed roots: {dest}")
         if dest.exists():
             raise SafetyError(f"relocate would overwrite existing path: {dest}")
         record = ActionRecord(
