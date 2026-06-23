@@ -608,3 +608,106 @@ For additional PASS 2 confidence (especially on active libraries where Tdarr or 
 - **Use `PLEX_TOKEN` rotation.** Plex tokens do not expire automatically. Rotate your token periodically via the Plex web interface, especially after any suspected exposure.
 - **Sensitive keys are redacted in reports.** `PLEX_TOKEN`, `RADARR_API_KEY`, and `SONARR_API_KEY` are replaced with `"<redacted>"` in all plan files and JSON reports. Do not manually copy these values into reports or logs.
 - **Least-privilege tokens.** If your Radarr/Sonarr instances support scoped API keys, use a key that can only trigger rescans rather than a full-admin key.
+
+---
+
+## Organizer Module (`run.py organizer`)
+
+The `organizer` module (`modules/media/organizer.py`) runs **after** the dedupe pass to tidy the unsorted "manuales" dump. Unlike the dedupe engine above (which reads `config.json` keys at the top level), the organizer reads platform config under the `paths` and `integrations` sections. It has three responsibilities, all safe-by-default:
+
+1. **CLEANUP (acts, honours `DRY_RUN`)** — junk sidecars (`.nfo` / `.txt` / `.url`), zero-byte files and empty directories are **moved to quarantine** via `core/fs` (INVARIANT I1 — never deleted), so they are recoverable and auto-purged after the retention window.
+2. **IDENTIFY (read-only)** — every media file is sent to Google Gemini, which returns structured `type` (movie / series / unknown), `title`, `year`, `season`, `episode` and a self-reported `confidence` percentage. Confident results become canonical target paths under the Movies/Series roots; a plan is written to `reports/organizer/plan.json` + `plan.md`, split into `confident` (>= threshold) and `needs_review`.
+3. **APPLY (opt-in, report-only by default)** — when `integrations.gemini.apply` is `true`, confident media (confidence >= threshold **and** a resolvable target) is **moved** to its canonical path via `core/fs.relocate(src, dest, *, reason)`, which never overwrites an existing destination (raises `SafetyError`) and never deletes. Default is report-only, like `modules/arr/orphans.py` — enable only after a parity window.
+
+### Paths
+
+**`paths.organizer_source`**
+- Type: string (absolute path)
+- Description: Directory to scan — the unsorted "manuales" dump.
+- Risk: 🟢 Scanned read-only during IDENTIFY; CLEANUP only quarantines from here.
+
+**`paths.movies_root`**
+- Type: string (absolute path)
+- Description: Target root under which movie suggestions are placed.
+- Risk: 🟡 Relocation targets are built under this root. `relocate` never overwrites, so a wrong root produces failed/parked moves, not data loss.
+
+**`paths.series_root`**
+- Type: string (absolute path)
+- Description: Target root under which series (season/episode) suggestions are placed.
+- Risk: 🟡 As above.
+
+### `integrations.gemini`
+
+**`integrations.gemini.api_key_ref`**
+- Default: `"GEMINI_API_KEY"`
+- Type: string
+- Description: **Name** of the secret read via `core/secrets` from `.env`/ENV — not the key itself. See `GEMINI_API_KEY` below.
+- Risk: 🟢 References a secret; the value never lives in `config.json`.
+
+**`integrations.gemini.model`**
+- Default: `"gemini-2.0-flash"`
+- Type: string
+- Description: Gemini model used for identification.
+- Risk: 🟢 Safe to adjust to another available Gemini model.
+
+**`integrations.gemini.batch_size`**
+- Default: `50`
+- Type: integer
+- Description: How many filenames are sent per Gemini request.
+- Risk: 🟢 Affects request count / quota only.
+
+**`integrations.gemini.confidence_threshold`**
+- Default: `90`
+- Type: number (percent)
+- Description: Minimum self-reported confidence % for a suggestion to be treated as actionable (it lands in `confident`; below it goes to `needs_review`). Also the gate APPLY relocation respects.
+- Risk: 🟡 Lowering it widens what APPLY will move. Keep high until the plan reports look right.
+
+**`integrations.gemini.apply`**
+- Default: `false`
+- Type: boolean
+- Description: When `false`, the module produces the plan/report only. When `true`, confident + resolvable media is relocated via `core/fs.relocate`. Honours `DRY_RUN`.
+- Risk: 🟡 Enabling makes the module move files (never overwrite, never delete). Enable only after a parity window confirms the plan.
+
+### Secret — `GEMINI_API_KEY`
+
+The Gemini API key is provided as a secret, never in `config.json`:
+
+- Add it to `.env` (git-ignored) at the repo root:
+  ```dotenv
+  GEMINI_API_KEY=your-gemini-api-key
+  ```
+- It is read via `core/secrets` by the name in `integrations.gemini.api_key_ref` (default `GEMINI_API_KEY`). An **environment variable of the same name takes precedence over `.env`**.
+- Never hardcode or commit the key (INVARIANT I3). Verify `.env` is git-ignored before any `git add`.
+
+### Example config
+
+```json
+{
+  "paths": {
+    "organizer_source": "/mnt/user/media/manuales",
+    "movies_root": "/mnt/user/media/movies",
+    "series_root": "/mnt/user/media/series"
+  },
+  "integrations": {
+    "gemini": {
+      "api_key_ref": "GEMINI_API_KEY",
+      "model": "gemini-2.0-flash",
+      "batch_size": 50,
+      "confidence_threshold": 90,
+      "apply": false
+    }
+  }
+}
+```
+
+### Usage
+
+```bash
+# Safe: CLEANUP simulated, IDENTIFY read-only, APPLY never moves (report only).
+python run.py organizer --dry-run
+
+# Acting cleanup + plan; relocation still gated by integrations.gemini.apply.
+python run.py organizer
+```
+
+Review `reports/organizer/plan.md` (the `confident` vs `needs_review` split) before setting `integrations.gemini.apply: true`.
