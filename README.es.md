@@ -225,6 +225,25 @@ Establece `PLEX_REFRESH_AFTER=true`. Tras la ejecución, plex_dupefinder llama a
 
 ---
 
+## Organizer (renombrado con IA + reubicación)
+
+El módulo `organizer` se ejecuta **después** de la pasada de duplicados para ordenar el volcado sin clasificar de "manuales" — medios descargados a mano que nunca pasaron por Radarr/Sonarr. Es un módulo de izumi, así que corre tras `run.py`:
+
+```bash
+python run.py organizer --dry-run    # vista previa segura: limpieza simulada, identificación de solo lectura, sin movimientos
+python run.py organizer              # la limpieza actúa (cuarentena); la reubicación sigue siendo opcional
+```
+
+Tiene tres responsabilidades, todas seguras por defecto:
+
+1. **Limpieza** (actúa, respeta `DRY_RUN`) — los sidecars basura (`.nfo` / `.txt` / `.url`), los archivos de cero bytes y los directorios vacíos se **mueven a cuarentena** vía `core/fs` (nunca se borran — INVARIANTE I1), de modo que siguen siendo recuperables hasta su purga automática tras la ventana de retención.
+2. **Identificación** (solo lectura) — cada archivo de medios se envía a Google Gemini (`gemini-2.0-flash`), que devuelve de forma estructurada `type` (movie / series / unknown), `title`, `year`, `season`, `episode` y un `confidence` autoinformado. Los resultados con confianza suficiente se convierten en rutas destino canónicas bajo las raíces de Movies/Series, y se escribe un plan en `reports/organizer/plan.json` + `plan.md`, dividido en `confident` (>= umbral) y `needs_review`.
+3. **Aplicar** (opcional, solo informe por defecto) — cuando `integrations.gemini.apply` es `true`, los medios con confianza suficiente y destino resoluble se **mueven** a su ruta canónica mediante la nueva primitiva `core/fs.relocate(src, dest, *, reason)`, que nunca sobrescribe un destino existente (lanza `SafetyError`) ni borra nada.
+
+La clave de la API de Gemini se lee por nombre (`integrations.gemini.api_key_ref`, por defecto `GEMINI_API_KEY`) vía `core/secrets` desde `.env` — nunca se escribe en el código. Revisa `reports/organizer/plan.md` antes de activar `apply`. Consulta [CONFIGURATION.es.md](CONFIGURATION.es.md) para todas las claves y un ejemplo de configuración, y [ADR-0012](docs/adr/0012-organizer-gemini-identify-and-relocate.md) para la decisión de diseño.
+
+---
+
 ## Configuración de Plex
 
 **Allow media deletion** (Permitir eliminación de medios) debe estar activado en Plex antes de que plex_dupefinder pueda eliminar entradas de metadatos duplicadas:
@@ -253,6 +272,7 @@ Los tests stubean Plex/`requests`/`tabulate`, así que se ejecutan con solo `pyt
 ## Documentación
 
 - [CONFIGURATION.es.md](CONFIGURATION.es.md) — todas las opciones de configuración, valores por defecto y tipos
+- [ADR-0012](docs/adr/0012-organizer-gemini-identify-and-relocate.md) — organizer: identificación con Gemini + `core/fs.relocate`
 - [SCORING.es.md](SCORING.es.md) — sistema de puntuación, tablas de códecs y guía de ajuste
 - [SAFETY_MODEL.es.md](SAFETY_MODEL.es.md) — las diez capas de seguridad en detalle
 - [MIGRATION.es.md](MIGRATION.es.md) — diferencias con el proyecto original l3uddz/plex_dupefinder

@@ -1,0 +1,18 @@
+# pipelines.yaml — named module sequences for `python run.py <pipeline>`
+#
+# Each pipeline is an ordered list of modules. Modules never import each other;
+# the pipeline is the only place their order is expressed. All modules honour
+# DRY_RUN, so a pipeline is safe to dry-run end to end:
+#   python run.py organize-manuales --dry-run
+
+pipelines:
+  # Tidy the unsorted "manuales" dump after the dedupe pass:
+  #   1. plex_dupefinder — remove duplicates first (quarantine, reversible)
+  #   2. organizer       — quarantine junk + AI-identify + (opt-in) relocate
+  #
+  # organizer is safe-by-default: CLEANUP quarantines junk (honours DRY_RUN),
+  # IDENTIFY is read-only (Gemini), APPLY (relocate) is report-only until
+  # integrations.gemini.apply is set true after a parity window.
+  organize-manuales:
+    - plex_dupefinder
+    - organizer

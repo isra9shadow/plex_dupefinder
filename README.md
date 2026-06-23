@@ -249,6 +249,25 @@ Set `PLEX_REFRESH_AFTER=true`. After the run, plex_dupefinder calls `section.upd
 
 ---
 
+## Organizer (AI rename + relocate)
+
+The `organizer` module runs **after** the dedupe pass to tidy the unsorted "manuales" dump — hand-downloaded media that never went through Radarr/Sonarr. It is an izumi module, so it runs behind `run.py`:
+
+```bash
+python run.py organizer --dry-run    # safe preview: cleanup simulated, identify read-only, no moves
+python run.py organizer              # cleanup acts (quarantine); relocation stays opt-in
+```
+
+It has three responsibilities, all safe-by-default:
+
+1. **Cleanup** (acts, honours `DRY_RUN`) — junk sidecars (`.nfo` / `.txt` / `.url`), zero-byte files and empty directories are **moved to quarantine** via `core/fs` (never deleted — INVARIANT I1), so they stay recoverable until auto-purged after the retention window.
+2. **Identify** (read-only) — every media file is sent to Google Gemini (`gemini-2.0-flash`), which returns structured `type` (movie / series / unknown), `title`, `year`, `season`, `episode` and a self-reported `confidence`. Confident results become canonical target paths under the Movies/Series roots, and a plan is written to `reports/organizer/plan.json` + `plan.md`, split into `confident` (>= threshold) and `needs_review`.
+3. **Apply** (opt-in, report-only by default) — when `integrations.gemini.apply` is `true`, confident + resolvable media is **moved** to its canonical path via the new `core/fs.relocate(src, dest, *, reason)` primitive, which never overwrites an existing destination (raises `SafetyError`) and never deletes.
+
+The Gemini API key is read by name (`integrations.gemini.api_key_ref`, default `GEMINI_API_KEY`) via `core/secrets` from `.env` — never hardcoded. Review `reports/organizer/plan.md` before enabling `apply`. See [CONFIGURATION.md](CONFIGURATION.md#organizer-module-runpy-organizer) for all keys and an example config, and [ADR-0012](docs/adr/0012-organizer-gemini-identify-and-relocate.md) for the design decision.
+
+---
+
 ## Plex Setup
 
 **Allow media deletion** must be enabled in Plex before plex_dupefinder can remove duplicate metadata entries:
@@ -277,6 +296,7 @@ The tests stub Plex/`requests`/`tabulate`, so they run with only `pytest` instal
 ## Documentation
 
 - [CONFIGURATION.md](CONFIGURATION.md) — all configuration options, defaults, and types
+- [ADR-0012](docs/adr/0012-organizer-gemini-identify-and-relocate.md) — organizer: Gemini identification + `core/fs.relocate`
 - [SCORING.md](SCORING.md) — scoring system, codec tables, and tuning guide
 - [SAFETY_MODEL.md](SAFETY_MODEL.md) — all ten safety layers in detail
 - [MIGRATION.md](MIGRATION.md) — differences from the upstream l3uddz/plex_dupefinder project

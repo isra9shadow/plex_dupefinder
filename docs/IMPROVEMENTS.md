@@ -19,6 +19,7 @@
 | IMP-08 | Aggregate confidence metrics | QUICK WIN | medium |
 | IMP-09 | Quarantine observability | QUICK WIN | high (trust) |
 | IMP-10 | HomeLab Health Dashboard | MEDIUM→LARGE | 🔥 high (strategic) |
+| IMP-12 | organizer: AI rename + relocate (Gemini) | MEDIUM | DELIVERED (post-dedupe tidy) |
 
 ---
 
@@ -252,3 +253,33 @@ Each is assigned to the agent that owns the area.
 - **CTO-20 · docs** : README now leads with the `izumi` platform entrypoint (`run.py`)
   and how the dedupe engine sits behind it; notes that doc-listed future items may not
   exist yet (source of truth = registered modules).
+
+### IMP-12 (DELIVERED) · organizer — AI rename + relocate (post-dedupe tidy)
+- **Problem:** after dedupe, the unsorted "manuales" dump still holds hand-downloaded
+  media with arbitrary names plus junk sidecars/zero-byte files/empty dirs. Filename
+  regex is too brittle to identify these.
+- **Delivered:** new module `modules/media/organizer.py`, run via `run.py organizer`,
+  with three safe-by-default stages:
+  - **CLEANUP** (acts, honours `DRY_RUN`): `.nfo`/`.txt`/`.url` sidecars, zero-byte files
+    and empty directories are **quarantined** via `core/fs` (INVARIANT I1 — never deleted,
+    auto-purged after retention).
+  - **IDENTIFY** (read-only): each media file is sent to Google Gemini
+    (`gemini-2.0-flash`, batched `batch_size`); the model returns structured
+    `type`/`title`/`year`/`season`/`episode`/`confidence`. Results are turned into
+    canonical target paths under `paths.movies_root` / `paths.series_root` and written
+    to `reports/organizer/plan.{json,md}`, split `confident` (>= `confidence_threshold`)
+    vs `needs_review`.
+  - **APPLY** (opt-in, report-only by default): with `integrations.gemini.apply=true`,
+    confident + resolvable media is moved via the new sanctioned mover
+    `core/fs.relocate(src, dest, *, reason)` — never overwrites (raises `SafetyError`),
+    never deletes. Off until a parity window (like `modules/arr/orphans.py`).
+- **Decision:** Gemini free-tier identification with model self-reported confidence as
+  the gate (no external metadata-verification step), and `core/fs.relocate` as the
+  second sanctioned mover — see [ADR-0012](adr/0012-organizer-gemini-identify-and-relocate.md).
+- **Config + secret:** `paths.organizer_source` / `paths.movies_root` /
+  `paths.series_root`; `integrations.gemini.{api_key_ref,model,batch_size,confidence_threshold,apply}`;
+  `GEMINI_API_KEY` secret via `core/secrets` (ENV > `.env`). Full reference + example in
+  [CONFIGURATION.md](../CONFIGURATION.md#organizer-module-runpy-organizer). Example
+  pipeline `organize-manuales` in `pipelines.yaml`.
+- **Follow-ups:** see `BACKLOG.md` (TMDb/TVmaze verification of Gemini titles; flip
+  `apply` after parity).
