@@ -12,6 +12,7 @@ The model is instructed to return STRICT JSON (``responseMimeType`` =
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
@@ -22,6 +23,11 @@ from integrations._net import require_http_url
 
 # (url, body, headers, timeout) -> response text
 JsonPoster = Callable[[str, bytes, Mapping[str, str], float], str]
+
+# HTTP status codes that are worth retrying with backoff: rate-limit/quota (429)
+# and the transient server-side 5xx family. Everything else is a hard failure.
+_RATE_LIMIT = 429
+_RETRYABLE_STATUS = frozenset({_RATE_LIMIT, 500, 502, 503, 504})
 
 _PROMPT_HEADER = (
     "You are a media librarian. For each input filename, identify the title as "
@@ -72,6 +78,9 @@ class GeminiClient:
         timeout: float = 30.0,
         batch_size: int = 50,
         poster: JsonPoster = _urllib_post,
+        max_retries: int = 3,
+        backoff_base: float = 1.0,
+        sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         if not api_key:
             raise IntegrationError("Gemini API key is empty")
@@ -81,6 +90,9 @@ class GeminiClient:
         self._timeout = timeout
         self._batch_size = max(1, batch_size)
         self._post = poster
+        self._max_retries = max(0, max_retries)
+        self._backoff_base = backoff_base
+        self._sleep = sleeper
 
     def _generate(self, prompt: str) -> str:
         url = f"{self._base}/models/{self._model}:generateContent?key={self._key}"
@@ -90,10 +102,30 @@ class GeminiClient:
         }
         body = json.dumps(payload).encode("utf-8")
         headers = {"content-type": "application/json"}
-        try:
-            return self._post(url, body, headers, self._timeout)
-        except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            raise IntegrationError(f"Gemini request failed: {exc}") from exc
+        # attempt 0 is the initial call; attempts 1..max_retries are retries.
+        for attempt in range(self._max_retries + 1):
+            try:
+                return self._post(url, body, headers, self._timeout)
+            except urllib.error.HTTPError as exc:
+                if exc.code not in _RETRYABLE_STATUS or attempt >= self._max_retries:
+                    raise self._http_error(exc) from exc
+                self._sleep(self._backoff_base * 2**attempt)
+            except (urllib.error.URLError, OSError, TimeoutError) as exc:
+                if attempt >= self._max_retries:
+                    raise IntegrationError(f"Gemini request failed: {exc}") from exc
+                self._sleep(self._backoff_base * 2**attempt)
+        # Unreachable: the loop either returns or raises on the final attempt.
+        raise IntegrationError("Gemini request failed: retries exhausted")
+
+    @staticmethod
+    def _http_error(exc: urllib.error.HTTPError) -> IntegrationError:
+        """Map an HTTPError to a clear IntegrationError (quota-aware on 429)."""
+        if exc.code == _RATE_LIMIT:
+            return IntegrationError(
+                "Gemini quota/rate-limit hit (HTTP 429): wait and retry later or "
+                f"check your API quota ({exc})"
+            )
+        return IntegrationError(f"Gemini request failed (HTTP {exc.code}): {exc}")
 
     @staticmethod
     def _extract_text(raw: str) -> str:
