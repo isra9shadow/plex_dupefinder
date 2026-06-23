@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from core.config import Config, SafetyConfig
-from core.errors import QuarantineError
+from core.errors import QuarantineError, SafetyError, ValidationError
 from core.fs import Fs
 from core.types import QuarantineEntry
 
@@ -128,6 +128,51 @@ def test_restore_rejects_path_outside_quarantine(tmp_path: Path) -> None:
     entry = QuarantineEntry(str(tmp_path / "dst"), str(evil), "s", "x", "c", 0.0)
     with pytest.raises(QuarantineError):
         Fs(_cfg(tmp_path / "q"), dry_run=False).restore(entry)
+
+
+def test_relocate_moves_and_creates_parents(tmp_path: Path) -> None:
+    src = tmp_path / "manuales" / "Dune.2021.mkv"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"data")
+    dest = tmp_path / "movies" / "Dune (2021)" / "Dune (2021).mkv"
+    rec = Fs(_cfg(tmp_path / "q"), dry_run=False).relocate(src, dest, reason="organize")
+    assert not src.exists()
+    assert dest.exists()
+    assert rec.action == "relocate" and rec.dest == str(dest) and rec.bytes == 4
+
+
+def test_relocate_dry_run_noop(tmp_path: Path) -> None:
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"data")
+    dest = tmp_path / "movies" / "A (2020)" / "A.mkv"
+    rec = Fs(_cfg(tmp_path / "q"), dry_run=True).relocate(src, dest, reason="x")
+    assert src.exists()  # nothing moved
+    assert not dest.exists()
+    assert rec.dest == str(dest)
+
+
+def test_relocate_refuses_to_overwrite(tmp_path: Path) -> None:
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"data")
+    dest = tmp_path / "b.mkv"
+    dest.write_bytes(b"existing")  # already there → never clobber
+    with pytest.raises(SafetyError):
+        Fs(_cfg(tmp_path / "q"), dry_run=False).relocate(src, dest, reason="x")
+    assert src.exists() and dest.read_bytes() == b"existing"
+
+
+def test_relocate_missing_source_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError):
+        Fs(_cfg(tmp_path / "q"), dry_run=False).relocate(
+            tmp_path / "nope.mkv", tmp_path / "d.mkv", reason="x"
+        )
+
+
+def test_relocate_identical_src_dest_raises(tmp_path: Path) -> None:
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"data")
+    with pytest.raises(ValidationError):
+        Fs(_cfg(tmp_path / "q"), dry_run=False).relocate(src, src, reason="x")
 
 
 def test_quarantine_and_purge_directory(tmp_path: Path) -> None:
