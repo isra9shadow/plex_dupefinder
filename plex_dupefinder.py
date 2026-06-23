@@ -99,6 +99,12 @@ REDACTED_KEYS = ('PLEX_TOKEN', 'RADARR_API_KEY', 'SONARR_API_KEY')
 
 run_id = uuid.uuid4().hex[:12]
 run_started_at = datetime.now(timezone.utc).isoformat()
+
+# Affected (section_name, plex_folder) pairs collected during PASS 2 so the
+# post-run Plex refresh can partial-scan ONLY the touched show/movie folders
+# instead of rescanning whole (potentially huge) libraries. See
+# PLEX_REFRESH_SCOPE and refresh_plex_targets().
+_plex_refresh_targets = set()
 run_report = {
     'run_id': run_id,
     'started_at': run_started_at,
@@ -1629,8 +1635,55 @@ def remove_item(part_info, reason, keeper_info=None,
 ############################################################
 
 
+def plan_item_refresh_targets(item, section_name):
+    """Return the set of (section_name, plex_folder) to partial-scan for a removed
+    item: the SHOW root folder(s) for an episode, the movie's own folder
+    otherwise. Uses Plex's own ``locations`` (already Plex-side paths, so no
+    PATH_MAPPINGS translation needed). Returns an empty set if it cannot resolve
+    a folder — the caller then falls back to a full-library refresh.
+    """
+    folders = set()
+    try:
+        if getattr(item, 'type', None) == 'episode':
+            try:
+                show = item.show()
+            except Exception:
+                log.debug("refresh target: show() lookup failed", exc_info=True)
+                show = None
+            for loc in (getattr(show, 'locations', None) or []):
+                folders.add(loc)
+        else:
+            for loc in (getattr(item, 'locations', None) or []):
+                folders.add(os.path.dirname(loc))
+    except Exception:
+        log.debug("refresh target planning failed", exc_info=True)
+    return {(section_name, f) for f in folders if f}
+
+
+def refresh_plex_targets(targets):
+    """Partial-scan only the affected show/movie folders (precise + agile on huge
+    libraries). ``targets`` is an iterable of (section_name, plex_folder)."""
+    result = {'attempted': False, 'scope': 'item', 'paths': [], 'errors': []}
+    targets = sorted(set(targets))
+    if not cfg.get('PLEX_REFRESH_AFTER') or not targets:
+        return result
+    result['attempted'] = True
+    for name, folder in targets:
+        try:
+            section = plex.library.section(name)
+            section.update(path=folder)
+            log.info("Plex partial refresh triggered section=%r path=%r", name, folder)
+            print("Triggered Plex partial refresh for %r: %s" % (name, folder))
+            result['paths'].append({'library': name, 'path': folder})
+        except Exception as e:
+            log.exception("Failed Plex partial refresh section=%r path=%r", name, folder)
+            print("Failed Plex partial refresh for %r (%s): %s" % (name, folder, e))
+            result['errors'].append({'library': name, 'path': folder, 'error': str(e)})
+    return result
+
+
 def refresh_plex_libraries(libraries):
-    result = {'attempted': False, 'libraries': [], 'errors': []}
+    result = {'attempted': False, 'scope': 'library', 'libraries': [], 'errors': []}
     if not cfg.get('PLEX_REFRESH_AFTER') or not libraries:
         return result
     result['attempted'] = True
@@ -2904,6 +2957,13 @@ def _revalidate_and_act_group(group):
         # rate-limit pauses — that is real time the action phase took).
         counters['action_seconds'] = time.monotonic() - _action_t0
         counters['groups_processed'] = 1
+        # Remember the touched show/movie folder so the post-run refresh can
+        # partial-scan only here, not the whole library. Only when we actually
+        # moved/deleted something (acting run).
+        if acting and counters['items_removed'] > 0:
+            _plex_refresh_targets.update(
+                plan_item_refresh_targets(fresh_item, library_name)
+            )
         return counters
 
     except Exception as e:
@@ -3182,8 +3242,16 @@ if __name__ == "__main__":
         'freed_bytes': totals['freed_bytes'],
     }
 
+    # Targeted refresh by default: partial-scan only the affected show/movie
+    # folders. Fall back to a full-library refresh if scope='library' or nothing
+    # per-item could be resolved despite items having been removed.
+    scope = str(cfg.get('PLEX_REFRESH_SCOPE', 'item')).lower()
+    if scope == 'item' and (_plex_refresh_targets or totals['items_removed'] == 0):
+        plex_refresh = refresh_plex_targets(_plex_refresh_targets)
+    else:
+        plex_refresh = refresh_plex_libraries(cfg.get('PLEX_LIBRARIES') or [])
     run_report['integrations'] = {
-        'plex_refresh': refresh_plex_libraries(cfg.get('PLEX_LIBRARIES') or []),
+        'plex_refresh': plex_refresh,
         'radarr': trigger_radarr_rescan(),
         'sonarr': trigger_sonarr_rescan(),
     }

@@ -209,7 +209,7 @@ def test_record_failure_no_exception_records_nulls(report):
 def test_refresh_plex_libraries_not_attempted_when_disabled(cfg):
     cfg["PLEX_REFRESH_AFTER"] = False
     result = pd.refresh_plex_libraries(["Movies"])
-    assert result == {"attempted": False, "libraries": [], "errors": []}
+    assert result == {"attempted": False, "scope": "library", "libraries": [], "errors": []}
 
 
 def test_refresh_plex_libraries_not_attempted_when_no_libraries(cfg):
