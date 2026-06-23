@@ -294,6 +294,35 @@ def test_check_file_exists_plex_only_when_fs_unreachable():
     assert 'plex-only' in r['reason']
 
 
+def test_trust_local_fs_existence_local_present_beats_stale_plex(tmp_path, monkeypatch):
+    # On-host mode: file is really on disk but Plex's flag is a stale False.
+    # With TRUST_LOCAL_FS_EXISTENCE the disk wins → present (no phantom flip).
+    monkeypatch.setitem(pd.cfg, 'TRUST_LOCAL_FS_EXISTENCE', True)
+    f = tmp_path / 'movie.mkv'
+    f.write_text('x')
+    r = pd.check_file_exists(str(f), plex_exists=False)
+    assert r['exists'] is True
+    assert 'trusting filesystem' in r['reason']
+
+
+def test_trust_local_fs_existence_local_absent_beats_stale_plex(tmp_path, monkeypatch):
+    # The disk is authoritative in BOTH directions: a real absence wins over a
+    # stale Plex True, so we never keep a phantom file.
+    monkeypatch.setitem(pd.cfg, 'TRUST_LOCAL_FS_EXISTENCE', True)
+    missing = tmp_path / 'gone.mkv'  # parent dir exists, file does not
+    r = pd.check_file_exists(str(missing), plex_exists=True)
+    assert r['exists'] is False
+    assert 'trusting filesystem' in r['reason']
+
+
+def test_trust_local_fs_existence_ignored_when_fs_unreachable(monkeypatch):
+    # No disk access → flag has no effect, Plex's claim still governs.
+    monkeypatch.setitem(pd.cfg, 'TRUST_LOCAL_FS_EXISTENCE', True)
+    r = pd.check_file_exists('/no_such_dir_zzz/movie.mkv', plex_exists=True)
+    assert r['exists'] is True
+    assert 'plex-only' in r['reason']
+
+
 # --------------------------------------------------------------------------- #
 # _quarantine_logical_path
 # --------------------------------------------------------------------------- #

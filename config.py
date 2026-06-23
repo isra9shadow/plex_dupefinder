@@ -127,6 +127,17 @@ base_config = {
     # Use when the script does not run on the Plex host and you do not trust
     # Plex's exists/accessible flags alone.
     'REQUIRE_LOCAL_FS_ACCESS': False,
+    # When True AND the filesystem is locally reachable, the on-disk existence
+    # check is authoritative and Plex's exists/accessible flag is informational
+    # only. Set this when the script runs ON the Plex/media host (direct disk
+    # access). Plex's `part.exists` flag is often stale and flaps between runs;
+    # under the default strict AND-rule that flap fabricates a phantom
+    # "existence flip" between PASS 1 and PASS 2, which makes the revalidation
+    # drift check skip the same duplicate groups forever (keeper + existence
+    # changed) so they are never cleaned. Default False to preserve the
+    # conservative behaviour; turn on for on-host runs to actually resolve
+    # those stuck groups. No effect when the filesystem is not reachable.
+    'TRUST_LOCAL_FS_EXISTENCE': False,
     # Just before acting on a group, re-read every candidate's size, wait
     # this many seconds, then read again. Any size change → skip the group.
     # Catches Tdarr transcodes / active copies that the cooldown missed.
