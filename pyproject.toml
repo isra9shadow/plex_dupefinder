@@ -26,6 +26,9 @@ ignore = []
 # adapters/command.py is THE single audited subprocess boundary (list args, no
 # shell, read-only callers). Bandit's subprocess warnings are expected here only.
 "adapters/command.py" = ["S603", "S607"]
+# menu.py is an operator launcher: it only spawns trusted local commands
+# (python3/docker) with list args (no shell). Subprocess warnings expected.
+"menu.py" = ["S404", "S603", "S607"]
 # integrations/* are the audited outbound-HTTP boundary (URLs built from config).
 "integrations/arr.py" = ["S310"]
 "integrations/tmdb.py" = ["S310"]
