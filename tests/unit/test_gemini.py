@@ -12,9 +12,7 @@ from integrations.gemini import GeminiClient, build_prompt
 
 def _envelope(suggestions: list[dict[str, object]]) -> str:
     """Wrap a suggestions array the way Gemini's generateContent does."""
-    return json.dumps(
-        {"candidates": [{"content": {"parts": [{"text": json.dumps(suggestions)}]}}]}
-    )
+    return json.dumps({"candidates": [{"content": {"parts": [{"text": json.dumps(suggestions)}]}}]})
 
 
 def _client(response: str, *, captured: list[bytes] | None = None) -> GeminiClient:
@@ -45,9 +43,11 @@ def test_identify_parses_suggestions() -> None:
 
 def test_identify_batches_requests() -> None:
     captured: list[bytes] = []
-    client = GeminiClient("KEY", batch_size=1, poster=lambda u, b, h, t: (
-        captured.append(b) or _envelope([{"filename": "n"}])
-    ))
+    client = GeminiClient(
+        "KEY",
+        batch_size=1,
+        poster=lambda u, b, h, t: captured.append(b) or _envelope([{"filename": "n"}]),
+    )
     client.identify(["a.mkv", "b.mkv", "c.mkv"])
     assert len(captured) == 3  # one request per item at batch_size=1
 

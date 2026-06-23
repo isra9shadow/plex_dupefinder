@@ -36,7 +36,7 @@ _PROMPT_HEADER = (
     '  "season"     : integer season number for series, else null\n'
     '  "episode"    : integer episode number for series, else null\n'
     '  "confidence" : integer 0-100, your honest certainty in this identification\n'
-    "Do not invent titles. If you cannot tell, use type \"unknown\" and a low "
+    'Do not invent titles. If you cannot tell, use type "unknown" and a low '
     "confidence. Output ONLY the JSON array, no prose, no code fences.\n\n"
     "Filenames:\n"
 )

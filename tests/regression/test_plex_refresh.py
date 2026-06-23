@@ -38,9 +38,7 @@ def test_plan_targets_episode_uses_show_root():
 
 def test_plan_targets_movie_uses_parent_folder():
     item = _Movie(["/movies/Dune (2021)/Dune.mkv"])
-    assert pd.plan_item_refresh_targets(item, "Peliculas") == {
-        ("Peliculas", "/movies/Dune (2021)")
-    }
+    assert pd.plan_item_refresh_targets(item, "Peliculas") == {("Peliculas", "/movies/Dune (2021)")}
 
 
 def test_plan_targets_empty_when_unresolvable():

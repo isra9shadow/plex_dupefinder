@@ -46,8 +46,18 @@ from integrations.gemini import GeminiClient
 
 _JUNK_SUFFIXES = {".nfo", ".txt", ".url"}
 _MEDIA_SUFFIXES = {
-    ".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv",
-    ".mpg", ".mpeg", ".ts", ".flv", ".webm", ".m2ts",
+    ".mkv",
+    ".mp4",
+    ".avi",
+    ".m4v",
+    ".mov",
+    ".wmv",
+    ".mpg",
+    ".mpeg",
+    ".ts",
+    ".flv",
+    ".webm",
+    ".m2ts",
 }
 _DEFAULT_THRESHOLD = 90.0
 
@@ -65,6 +75,7 @@ class Suggestion:
 
 
 # --- scanning (pure, testable) -------------------------------------------------
+
 
 def is_junk(path: Path) -> bool:
     """A removable sidecar (.nfo/.txt/.url) or a zero-byte file."""
@@ -104,6 +115,7 @@ def empty_dirs(root: Path) -> list[Path]:
 
 
 # --- suggestion shaping (pure, testable) ---------------------------------------
+
 
 def _opt_int(value: object) -> int | None:
     if isinstance(value, bool):
@@ -157,13 +169,12 @@ def normalize_suggestion(
     episode = _opt_int(raw.get("episode"))
     confidence = _clamp_confidence(raw.get("confidence"))
     ext = Path(filename).suffix
-    target = suggested_target(
-        kind, title, year, season, episode, ext, movies_root, series_root
-    )
+    target = suggested_target(kind, title, year, season, episode, ext, movies_root, series_root)
     return Suggestion(filename, kind, title, year, season, episode, confidence, target)
 
 
 # --- wiring --------------------------------------------------------------------
+
 
 def _gemini(ctx: RunContext) -> GeminiClient:
     settings = ctx.config.integrations.get("gemini", {})
@@ -261,7 +272,8 @@ def _write_report(
         encoding="utf-8",
     )
     header = (
-        "# Organizer plan (apply enabled)" if applied
+        "# Organizer plan (apply enabled)"
+        if applied
         else "# Organizer plan (report-only — no media moved)"
     )
     lines = [
@@ -271,10 +283,7 @@ def _write_report(
         f"Confidence threshold: {threshold:.0f}%",
         "",
         f"## Applied ({len(applied)})",
-        *[
-            f"- {m['src']} -> {m['dest']}" + (" (dry-run)" if m["dry_run"] else "")
-            for m in applied
-        ],
+        *[f"- {m['src']} -> {m['dest']}" + (" (dry-run)" if m["dry_run"] else "") for m in applied],
         "",
         f"## Confident ({len(confident)})",
         *[f"- [{s.confidence:.0f}%] {s.filename} -> {s.target}" for s in confident],
@@ -308,9 +317,7 @@ def run(ctx: RunContext) -> ModuleResult:
         try:
             raw = _gemini(ctx).identify([p.name for p in media])
             for path, entry in zip(media, raw, strict=False):
-                suggestions.append(
-                    normalize_suggestion(entry, path.name, movies_root, series_root)
-                )
+                suggestions.append(normalize_suggestion(entry, path.name, movies_root, series_root))
         except (ConfigError, SecretError) as exc:
             result.add_failure(FailureRecord(category="config", message=str(exc)))
         except IntegrationError as exc:

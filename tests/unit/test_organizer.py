@@ -12,6 +12,7 @@ from tests.fakes import make_context
 
 # --- pure scanning / classification -------------------------------------------
 
+
 def test_is_junk_by_suffix_and_zero_byte(tmp_path: Path) -> None:
     nfo = tmp_path / "a.nfo"
     nfo.write_text("x", encoding="utf-8")
@@ -44,6 +45,7 @@ def test_empty_dirs_detected_deepest_first(tmp_path: Path) -> None:
 
 # --- suggestion shaping --------------------------------------------------------
 
+
 def test_suggested_target_movie() -> None:
     t = organizer.suggested_target("movie", "Dune", 2021, None, None, ".mkv", "/M", "/S")
     assert t == str(Path("/M") / "Dune (2021)" / "Dune (2021).mkv")
@@ -63,7 +65,9 @@ def test_suggested_target_unknown_is_none() -> None:
 def test_normalize_suggestion_clamps_and_defaults() -> None:
     s = organizer.normalize_suggestion(
         {"type": "movie", "title": "  Dune ", "year": 2021, "confidence": 150},
-        "fallback.mkv", "/M", "/S",
+        "fallback.mkv",
+        "/M",
+        "/S",
     )
     assert s.filename == "fallback.mkv"  # model omitted filename → fallback
     assert s.title == "Dune"
@@ -72,6 +76,7 @@ def test_normalize_suggestion_clamps_and_defaults() -> None:
 
 
 # --- run integration -----------------------------------------------------------
+
 
 def test_run_fails_without_source(tmp_path: Path) -> None:
     result = organizer.run(make_context(tmp_path))
@@ -87,8 +92,15 @@ def test_run_cleans_junk_and_reports(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     (source / "empty").mkdir()
 
     def fake_identify(self: object, names: list[str]) -> list[dict[str, object]]:
-        return [{"filename": "Dune.2021.mkv", "type": "movie", "title": "Dune",
-                 "year": 2021, "confidence": 97}]
+        return [
+            {
+                "filename": "Dune.2021.mkv",
+                "type": "movie",
+                "title": "Dune",
+                "year": 2021,
+                "confidence": 97,
+            }
+        ]
 
     monkeypatch.setattr(organizer.GeminiClient, "identify", fake_identify)
     monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
@@ -130,15 +142,28 @@ def test_run_dry_run_does_not_move(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 # --- apply step ----------------------------------------------------------------
 
+
 def _movie_identify(title: str = "Dune", year: int = 2021, confidence: int = 97):
     def fake(self: object, names: list[str]) -> list[dict[str, object]]:
-        return [{"filename": "Dune.2021.mkv", "type": "movie", "title": title,
-                 "year": year, "confidence": confidence}]
+        return [
+            {
+                "filename": "Dune.2021.mkv",
+                "type": "movie",
+                "title": title,
+                "year": year,
+                "confidence": confidence,
+            }
+        ]
+
     return fake
 
 
 def _make_apply_ctx(
-    tmp_path: Path, source: Path, *, mode: SafetyMode, apply: bool,
+    tmp_path: Path,
+    source: Path,
+    *,
+    mode: SafetyMode,
+    apply: bool,
     movies_root: str | None = None,
 ):
     return make_context(
@@ -166,8 +191,11 @@ def test_apply_disabled_by_default_does_not_move(
     ctx = make_context(
         tmp_path,
         mode=SafetyMode.LIVE,
-        paths={"organizer_source": str(source), "movies_root": str(tmp_path / "Movies"),
-               "series_root": str(tmp_path / "Series")},
+        paths={
+            "organizer_source": str(source),
+            "movies_root": str(tmp_path / "Movies"),
+            "series_root": str(tmp_path / "Series"),
+        },
         integrations={"gemini": {"api_key_ref": "GEMINI_API_KEY"}},
     )
     result = organizer.run(ctx)
@@ -177,9 +205,7 @@ def test_apply_disabled_by_default_does_not_move(
     assert (source / "Dune.2021.mkv").exists()  # never moved
 
 
-def test_apply_live_moves_confident_movie(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_apply_live_moves_confident_movie(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     source = tmp_path / "manuales"
     source.mkdir()
     src_file = source / "Dune.2021.mkv"
@@ -202,16 +228,12 @@ def test_apply_live_moves_confident_movie(
     assert plan["applied"][0]["dry_run"] is False
 
 
-def test_apply_low_confidence_not_moved(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_apply_low_confidence_not_moved(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     source = tmp_path / "manuales"
     source.mkdir()
     src_file = source / "Dune.2021.mkv"
     src_file.write_bytes(b"data")
-    monkeypatch.setattr(
-        organizer.GeminiClient, "identify", _movie_identify(confidence=50)
-    )
+    monkeypatch.setattr(organizer.GeminiClient, "identify", _movie_identify(confidence=50))
     monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
 
     ctx = _make_apply_ctx(tmp_path, source, mode=SafetyMode.LIVE, apply=True)
@@ -231,8 +253,9 @@ def test_apply_unknown_target_none_not_moved(
 
     def fake(self: object, names: list[str]) -> list[dict[str, object]]:
         # high confidence but unknown type → target is None → not applicable.
-        return [{"filename": "Mystery.mkv", "type": "unknown", "title": "Mystery",
-                 "confidence": 99}]
+        return [
+            {"filename": "Mystery.mkv", "type": "unknown", "title": "Mystery", "confidence": 99}
+        ]
 
     monkeypatch.setattr(organizer.GeminiClient, "identify", fake)
     monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
