@@ -184,6 +184,12 @@ base_config = {
 
     # ----- Integrations -----
     'PLEX_REFRESH_AFTER': False,
+    # Scope of the post-run Plex refresh. 'item' (default) triggers a PARTIAL
+    # scan of only the affected show/movie folders (precise + fast on huge
+    # libraries); 'library' rescans every configured library section (the old
+    # behaviour, far heavier). Falls back to 'library' if no per-item target
+    # could be resolved. Only matters when PLEX_REFRESH_AFTER is True.
+    'PLEX_REFRESH_SCOPE': 'item',
     'RADARR_URL': '',
     'RADARR_API_KEY': '',
     'RADARR_RESCAN_AFTER': False,
