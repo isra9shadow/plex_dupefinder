@@ -290,6 +290,39 @@ def test_apply_dry_run_plans_but_does_not_move(
     assert plan["applied"][0]["dry_run"] is True
 
 
+def test_apply_target_outside_roots_is_skipped_gracefully(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "manuales"
+    source.mkdir()
+    src_file = source / "Dune.2021.mkv"
+    src_file.write_bytes(b"data")
+
+    def fake(self: object, names: list[str]) -> list[dict[str, object]]:
+        # Hallucinated title with traversal → target escapes the movies root.
+        return [
+            {
+                "filename": "Dune.2021.mkv",
+                "type": "movie",
+                "title": "../../../../etc/Dune",
+                "year": 2021,
+                "confidence": 99,
+            }
+        ]
+
+    monkeypatch.setattr(organizer.GeminiClient, "identify", fake)
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = _make_apply_ctx(tmp_path, source, mode=SafetyMode.LIVE, apply=True)
+    result = organizer.run(ctx)
+
+    assert result.ok  # the bad item does not fail the run (per-item skip)
+    assert result.metrics["relocated"] == 0.0  # escapes roots → skipped
+    assert src_file.exists()  # media left in place
+    escaped = tmp_path.parent / "etc" / "Dune (2021)" / "Dune (2021).mkv"
+    assert not escaped.exists()  # nothing written outside the roots
+
+
 def test_apply_collision_is_skipped_gracefully(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -222,13 +222,18 @@ def _applicable(suggestions: list[Suggestion], threshold: float) -> list[Suggest
 
 
 def _apply(
-    ctx: RunContext, suggestions: list[Suggestion], threshold: float, by_name: dict[str, Path]
+    ctx: RunContext,
+    suggestions: list[Suggestion],
+    threshold: float,
+    by_name: dict[str, Path],
+    allowed_roots: list[Path],
 ) -> list[dict[str, object]]:
     """Relocate every applicable suggestion into its canonical path.
 
     Returns one move record per relocate (planned in DRY_RUN, executed in LIVE).
-    A per-item SafetyError (collision) or ValidationError (missing/identical src)
-    is logged and skipped without aborting the rest (mirrors ``_cleanup``).
+    A per-item SafetyError (collision, or a dest outside ``allowed_roots`` — a
+    hallucinated target) or ValidationError (missing/identical src) is logged and
+    skipped without aborting the rest (mirrors ``_cleanup``).
     """
     moves: list[dict[str, object]] = []
     for suggestion in _applicable(suggestions, threshold):
@@ -237,7 +242,7 @@ def _apply(
             continue
         dest = Path(suggestion.target)
         try:
-            ctx.fs.relocate(src, dest, reason="organizer apply")
+            ctx.fs.relocate(src, dest, reason="organizer apply", allowed_roots=allowed_roots)
             moves.append({"src": str(src), "dest": str(dest), "dry_run": ctx.fs.dry_run})
         except (SafetyError, ValidationError) as exc:
             ctx.logger.warning(
@@ -330,7 +335,8 @@ def run(ctx: RunContext) -> ModuleResult:
     try:
         if _apply_enabled(ctx):
             by_name = {p.name: p for p in media}
-            applied = _apply(ctx, suggestions, threshold, by_name)
+            allowed_roots = [Path(movies_root), Path(series_root)]
+            applied = _apply(ctx, suggestions, threshold, by_name, allowed_roots)
     except ConfigError as exc:
         result.add_failure(FailureRecord(category="config", message=str(exc)))
 

@@ -107,7 +107,7 @@ class Fs:
     @property dry_run -> bool
     @property quarantine_dir -> Path
     quarantine(path: Path, *, reason: str) -> QuarantineEntry   # MOVES + writes restore sidecar
-    relocate(src: Path, dest: Path, *, reason: str) -> ActionRecord  # MOVES to canonical path; never overwrites (SafetyError)
+    relocate(src: Path, dest: Path, *, reason: str, allowed_roots: Sequence[Path]|None=None) -> ActionRecord  # MOVES to canonical path; never overwrites (SafetyError); if allowed_roots given, dest must resolve inside one (else SafetyError)
     restore(entry: QuarantineEntry) -> Path
     purge(retention_days: float|None=None, *, simulate: bool=False) -> PurgeResult   # only real delete
 ```
