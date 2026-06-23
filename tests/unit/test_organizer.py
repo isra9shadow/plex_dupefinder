@@ -126,3 +126,166 @@ def test_run_dry_run_does_not_move(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     result = organizer.run(ctx)
     assert result.quarantined == 1  # planned
     assert (source / "junk.nfo").exists()  # but not actually moved in DRY_RUN
+
+
+# --- apply step ----------------------------------------------------------------
+
+def _movie_identify(title: str = "Dune", year: int = 2021, confidence: int = 97):
+    def fake(self: object, names: list[str]) -> list[dict[str, object]]:
+        return [{"filename": "Dune.2021.mkv", "type": "movie", "title": title,
+                 "year": year, "confidence": confidence}]
+    return fake
+
+
+def _make_apply_ctx(
+    tmp_path: Path, source: Path, *, mode: SafetyMode, apply: bool,
+    movies_root: str | None = None,
+):
+    return make_context(
+        tmp_path,
+        mode=mode,
+        paths={
+            "organizer_source": str(source),
+            "movies_root": movies_root or str(tmp_path / "Movies"),
+            "series_root": str(tmp_path / "Series"),
+        },
+        integrations={"gemini": {"api_key_ref": "GEMINI_API_KEY", "apply": apply}},
+    )
+
+
+def test_apply_disabled_by_default_does_not_move(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "manuales"
+    source.mkdir()
+    (source / "Dune.2021.mkv").write_bytes(b"data")
+    monkeypatch.setattr(organizer.GeminiClient, "identify", _movie_identify())
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    # apply key omitted entirely → defaults False, even in LIVE mode.
+    ctx = make_context(
+        tmp_path,
+        mode=SafetyMode.LIVE,
+        paths={"organizer_source": str(source), "movies_root": str(tmp_path / "Movies"),
+               "series_root": str(tmp_path / "Series")},
+        integrations={"gemini": {"api_key_ref": "GEMINI_API_KEY"}},
+    )
+    result = organizer.run(ctx)
+
+    assert result.ok
+    assert result.metrics["relocated"] == 0.0
+    assert (source / "Dune.2021.mkv").exists()  # never moved
+
+
+def test_apply_live_moves_confident_movie(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "manuales"
+    source.mkdir()
+    src_file = source / "Dune.2021.mkv"
+    src_file.write_bytes(b"data")
+    monkeypatch.setattr(organizer.GeminiClient, "identify", _movie_identify())
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = _make_apply_ctx(tmp_path, source, mode=SafetyMode.LIVE, apply=True)
+    result = organizer.run(ctx)
+
+    assert result.ok
+    assert result.metrics["relocated"] == 1.0
+    dest = tmp_path / "Movies" / "Dune (2021)" / "Dune (2021).mkv"
+    assert dest.exists()  # moved into canonical path
+    assert not src_file.exists()  # gone from source
+    plan = json.loads(
+        (tmp_path / "reports" / "organizer" / "plan.json").read_text(encoding="utf-8")
+    )
+    assert plan["applied"][0]["dest"] == str(dest)
+    assert plan["applied"][0]["dry_run"] is False
+
+
+def test_apply_low_confidence_not_moved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "manuales"
+    source.mkdir()
+    src_file = source / "Dune.2021.mkv"
+    src_file.write_bytes(b"data")
+    monkeypatch.setattr(
+        organizer.GeminiClient, "identify", _movie_identify(confidence=50)
+    )
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = _make_apply_ctx(tmp_path, source, mode=SafetyMode.LIVE, apply=True)
+    result = organizer.run(ctx)
+
+    assert result.metrics["relocated"] == 0.0
+    assert src_file.exists()  # below threshold → left in place
+
+
+def test_apply_unknown_target_none_not_moved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "manuales"
+    source.mkdir()
+    src_file = source / "Mystery.mkv"
+    src_file.write_bytes(b"data")
+
+    def fake(self: object, names: list[str]) -> list[dict[str, object]]:
+        # high confidence but unknown type → target is None → not applicable.
+        return [{"filename": "Mystery.mkv", "type": "unknown", "title": "Mystery",
+                 "confidence": 99}]
+
+    monkeypatch.setattr(organizer.GeminiClient, "identify", fake)
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = _make_apply_ctx(tmp_path, source, mode=SafetyMode.LIVE, apply=True)
+    result = organizer.run(ctx)
+
+    assert result.metrics["relocated"] == 0.0
+    assert src_file.exists()  # no target → left in place
+
+
+def test_apply_dry_run_plans_but_does_not_move(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "manuales"
+    source.mkdir()
+    src_file = source / "Dune.2021.mkv"
+    src_file.write_bytes(b"data")
+    monkeypatch.setattr(organizer.GeminiClient, "identify", _movie_identify())
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = _make_apply_ctx(tmp_path, source, mode=SafetyMode.DRY_RUN, apply=True)
+    result = organizer.run(ctx)
+
+    assert result.metrics["relocated"] == 1.0  # planned
+    dest = tmp_path / "Movies" / "Dune (2021)" / "Dune (2021).mkv"
+    assert src_file.exists()  # not actually moved
+    assert not dest.exists()
+    plan = json.loads(
+        (tmp_path / "reports" / "organizer" / "plan.json").read_text(encoding="utf-8")
+    )
+    assert plan["applied"][0]["dry_run"] is True
+
+
+def test_apply_collision_is_skipped_gracefully(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "manuales"
+    source.mkdir()
+    src_file = source / "Dune.2021.mkv"
+    src_file.write_bytes(b"data")
+    # Pre-create the destination so relocate raises SafetyError (no clobber).
+    dest = tmp_path / "Movies" / "Dune (2021)" / "Dune (2021).mkv"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"existing")
+
+    monkeypatch.setattr(organizer.GeminiClient, "identify", _movie_identify())
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = _make_apply_ctx(tmp_path, source, mode=SafetyMode.LIVE, apply=True)
+    result = organizer.run(ctx)
+
+    assert result.ok  # one bad item does not fail the run
+    assert result.metrics["relocated"] == 0.0  # collision → skipped
+    assert src_file.exists()  # media left in place
+    assert dest.read_bytes() == b"existing"  # existing file untouched

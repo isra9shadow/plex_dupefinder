@@ -9,15 +9,21 @@ Two responsibilities, both safe-by-default:
   2. IDENTIFY (report-only) — every media file is sent to Gemini, which returns a
      structured title/type/season/episode plus a self-reported confidence %. We
      turn that into a suggested target path under the Movies/Series roots and
-     write it to a plan report. We do NOT move media yet: that needs a confidence
-     gate + a ``core/fs`` relocate primitive and a parity window (cf. arr_orphans
-     started report-only too).
+     write it to a plan report.
+
+  3. APPLY (acts, opt-in) — when ``integrations.gemini.apply`` is True, every
+     suggestion that clears the confidence gate AND resolved to a target is MOVED
+     into its canonical path via ``core/fs`` ``relocate`` (INVARIANT I1: the only
+     sanctioned mover besides quarantine). It never clobbers an existing file and
+     honours DRY_RUN. Defaults to False, so the module stays report-only unless
+     explicitly opted in (cf. arr_orphans started report-only too).
 
 Config (config.json):
   paths.organizer_source : directory to scan (the "manuales" dump)
   paths.movies_root      : target root for movie suggestions
   paths.series_root      : target root for series suggestions
-  integrations.gemini    : {api_key_ref, model, batch_size, confidence_threshold}
+  integrations.gemini    : {api_key_ref, model, batch_size, confidence_threshold,
+                            apply}  # apply: bool, default False
 """
 
 from __future__ import annotations
@@ -27,7 +33,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from core import secrets
-from core.errors import ConfigError, IntegrationError, SecretError
+from core.errors import (
+    ConfigError,
+    IntegrationError,
+    SafetyError,
+    SecretError,
+    ValidationError,
+)
 from core.registry import register
 from core.types import FailureRecord, ModuleResult, RunContext
 from integrations.gemini import GeminiClient
@@ -173,6 +185,14 @@ def _threshold(ctx: RunContext) -> float:
     return float(value)
 
 
+def _apply_enabled(ctx: RunContext) -> bool:
+    settings = ctx.config.integrations.get("gemini", {})
+    value = settings.get("apply", False)
+    if not isinstance(value, bool):
+        raise ConfigError("integrations.gemini.apply must be a boolean")
+    return value
+
+
 def _cleanup(ctx: RunContext, junk: list[Path], empties: list[Path]) -> int:
     """Quarantine junk files and empty dirs. Returns count moved (or planned)."""
     moved = 0
@@ -185,8 +205,42 @@ def _cleanup(ctx: RunContext, junk: list[Path], empties: list[Path]) -> int:
     return moved
 
 
+def _applicable(suggestions: list[Suggestion], threshold: float) -> list[Suggestion]:
+    """Suggestions that clear the confidence gate AND resolved to a target."""
+    return [s for s in suggestions if s.confidence >= threshold and s.target]
+
+
+def _apply(
+    ctx: RunContext, suggestions: list[Suggestion], threshold: float, by_name: dict[str, Path]
+) -> list[dict[str, object]]:
+    """Relocate every applicable suggestion into its canonical path.
+
+    Returns one move record per relocate (planned in DRY_RUN, executed in LIVE).
+    A per-item SafetyError (collision) or ValidationError (missing/identical src)
+    is logged and skipped without aborting the rest (mirrors ``_cleanup``).
+    """
+    moves: list[dict[str, object]] = []
+    for suggestion in _applicable(suggestions, threshold):
+        src = by_name.get(suggestion.filename)
+        if src is None or suggestion.target is None:  # pragma: no cover - defensive
+            continue
+        dest = Path(suggestion.target)
+        try:
+            ctx.fs.relocate(src, dest, reason="organizer apply")
+            moves.append({"src": str(src), "dest": str(dest), "dry_run": ctx.fs.dry_run})
+        except (SafetyError, ValidationError) as exc:
+            ctx.logger.warning(
+                "organizer apply skipped", src=str(src), dest=str(dest), error=str(exc)
+            )
+    return moves
+
+
 def _write_report(
-    ctx: RunContext, suggestions: list[Suggestion], threshold: float, cleaned: int
+    ctx: RunContext,
+    suggestions: list[Suggestion],
+    threshold: float,
+    cleaned: int,
+    applied: list[dict[str, object]],
 ) -> None:
     out_dir = ctx.config.reporting.dir / "organizer"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -197,6 +251,7 @@ def _write_report(
             {
                 "threshold": threshold,
                 "cleaned_to_quarantine": cleaned,
+                "applied": applied,
                 "confident": [asdict(s) for s in confident],
                 "needs_review": [asdict(s) for s in review],
             },
@@ -205,11 +260,21 @@ def _write_report(
         ),
         encoding="utf-8",
     )
+    header = (
+        "# Organizer plan (apply enabled)" if applied
+        else "# Organizer plan (report-only — no media moved)"
+    )
     lines = [
-        "# Organizer plan (report-only — no media moved)",
+        header,
         "",
         f"Cleaned to quarantine: {cleaned}",
         f"Confidence threshold: {threshold:.0f}%",
+        "",
+        f"## Applied ({len(applied)})",
+        *[
+            f"- {m['src']} -> {m['dest']}" + (" (dry-run)" if m["dry_run"] else "")
+            for m in applied
+        ],
         "",
         f"## Confident ({len(confident)})",
         *[f"- [{s.confidence:.0f}%] {s.filename} -> {s.target}" for s in confident],
@@ -252,15 +317,27 @@ def run(ctx: RunContext) -> ModuleResult:
             result.add_failure(FailureRecord(category="integration", message=str(exc)))
 
     threshold = _threshold(ctx)
-    _write_report(ctx, suggestions, threshold, cleaned)
     confident = sum(1 for s in suggestions if s.confidence >= threshold and s.target)
+
+    applied: list[dict[str, object]] = []
+    try:
+        if _apply_enabled(ctx):
+            by_name = {p.name: p for p in media}
+            applied = _apply(ctx, suggestions, threshold, by_name)
+    except ConfigError as exc:
+        result.add_failure(FailureRecord(category="config", message=str(exc)))
+
+    relocated = len(applied)
+    result.metrics["relocated"] = float(relocated)
+    _write_report(ctx, suggestions, threshold, cleaned, applied)
     ctx.logger.info(
         "organizer done",
         cleaned=cleaned,
         media=len(media),
         suggestions=len(suggestions),
         confident=confident,
+        relocated=relocated,
         dry_run=ctx.fs.dry_run,
     )
-    result.actions = cleaned + confident
+    result.actions = cleaned + confident + relocated
     return result
