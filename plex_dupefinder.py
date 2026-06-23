@@ -465,8 +465,21 @@ def check_file_exists(file_path, plex_exists=None, plex_accessible=None):
     """
     Determine whether a media part is actually present.
 
-    Filesystem is authoritative. When both Plex and the filesystem report,
-    BOTH must agree the file exists. Any disagreement is treated as MISSING.
+    Filesystem is authoritative. By default, when both Plex and the filesystem
+    report, BOTH must agree the file exists and any disagreement is treated as
+    MISSING (conservative — prefer false negatives).
+
+    When TRUST_LOCAL_FS_EXISTENCE is set AND the filesystem is locally
+    reachable, the on-disk result is taken as ground truth and Plex's
+    exists/accessible flag is demoted to informational. This is the correct
+    mode when the script runs ON the Plex/media host (direct disk access):
+    Plex's `part.exists` flag is frequently stale and flaps False↔True between
+    runs, which under the strict AND-rule manufactures a phantom "existence
+    flip" — the file is on disk in both passes, only Plex's opinion changed.
+    That phantom flip is the root cause of duplicate groups being perpetually
+    skipped by the PASS 2 revalidation drift check (existence + keeper change),
+    so they never get cleaned. The disagreement is still logged, just not acted
+    upon. Has no effect when the filesystem is not reachable from this host.
     """
     plex_claim = None
     if plex_exists is not None:
@@ -487,13 +500,24 @@ def check_file_exists(file_path, plex_exists=None, plex_accessible=None):
     except (OSError, ValueError):
         pass
 
+    trust_local = bool(cfg.get('TRUST_LOCAL_FS_EXISTENCE', False))
+
     if local_fs_accessible and plex_claim is not None:
-        exists = bool(local_claim and plex_claim)
-        if local_claim != plex_claim:
-            reason = ("DISAGREEMENT local=%s plex=%s — treating as MISSING for safety"
-                      % (local_claim, plex_claim))
+        if trust_local:
+            # Disk is ground truth; Plex's flag is informational only.
+            exists = bool(local_claim)
+            if local_claim != plex_claim:
+                reason = ("DISAGREEMENT local=%s plex=%s — trusting filesystem "
+                          "(TRUST_LOCAL_FS_EXISTENCE)" % (local_claim, plex_claim))
+            else:
+                reason = "local=%s, plex=%s" % (local_claim, plex_claim)
         else:
-            reason = "local=%s, plex=%s" % (local_claim, plex_claim)
+            exists = bool(local_claim and plex_claim)
+            if local_claim != plex_claim:
+                reason = ("DISAGREEMENT local=%s plex=%s — treating as MISSING for safety"
+                          % (local_claim, plex_claim))
+            else:
+                reason = "local=%s, plex=%s" % (local_claim, plex_claim)
     elif local_fs_accessible:
         exists = bool(local_claim)
         reason = "local-only check: %s (Plex did not report)" % local_claim
