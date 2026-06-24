@@ -201,6 +201,7 @@ The script ships with a conservative safety posture. A brand-new `config.json` w
 - Description: If any non-keeper candidate is more than this multiple of the keeper's file size, the group is skipped. Guards against scoring-quirk mis-pairings where a large remux or 4K file is outscored by a smaller, newer encode. The check is `other_size / keeper_size > MAX_SIZE_RATIO`. The skip reason is logged as: `"size ratio N.Nx exceeds threshold M.Mx (keeper=X, sibling id=<id>=Y)"`. Set to `0` to disable.
 - Failure mode prevented: Accidentally removing a large, high-quality remux because a smaller newer file won on codec or resolution scoring.
 - Risk: 🟡 Disabling (`0`) or setting very high removes protection against mis-pairings.
+- **"Keep the highest score" mode (`0`):** at scale (e.g. ~500 episodes that have a small efficient HEVC alongside a large legacy x264), this guard skips the group whenever the HEVC keeper is much smaller than the x264 sibling, so the *lower-scored* big file is never removed. If you trust your scoring to define quality (codec/resolution/source weights), set `MAX_SIZE_RATIO=0` so the score always decides. This is the `config_unraid_recommended.json` default. It is safe to do in `QUARANTINE_MODE` (removals are recoverable within `QUARANTINE_RETENTION_DAYS`). Caveat: with the guard off, a 1080p remux that scores below a small 1080p HEVC encode would be the one removed — if you want to keep remuxes, raise `SOURCE_SCORES.remux` instead of re-enabling the ratio guard.
 
 ---
 
