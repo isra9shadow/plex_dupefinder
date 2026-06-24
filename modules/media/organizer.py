@@ -72,6 +72,9 @@ class Suggestion:
     episode: int | None
     confidence: float
     target: str | None
+    tmdb_id: int | None = None
+    video_format: str | None = None
+    video_codec: str | None = None
 
 
 # --- scanning (pure, testable) -------------------------------------------------
@@ -96,6 +99,21 @@ def _safe_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:  # pragma: no cover - defensive
         return 0
+
+
+def _under_any(path: Path, roots: list[Path]) -> bool:
+    """True if ``path`` resolves inside any of ``roots`` (output-dir exclusion)."""
+    try:
+        resolved = path.resolve()
+    except OSError:  # pragma: no cover - defensive
+        return False
+    for root in roots:
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def scan(root: Path) -> tuple[list[Path], list[Path]]:
@@ -138,6 +156,24 @@ def _clamp_confidence(value: object) -> float:
     return float(min(100, max(0, value)))
 
 
+def _clean_token(value: object) -> str | None:
+    """A safe, non-empty filename token (no path separators), else None."""
+    if not isinstance(value, str):
+        return None
+    token = value.strip().replace("/", "-").replace("\\", "-")
+    return token or None
+
+
+def _quality_suffix(video_format: str | None, video_codec: str | None) -> str:
+    """``(Bluray-1080p-x265)`` style tag, dropping whichever part is missing."""
+    parts = [p for p in (video_format, video_codec) if p]
+    return f" ({'-'.join(parts)})" if parts else ""
+
+
+def _id_suffix(tmdb_id: int | None) -> str:
+    return f" (tmdbid-{tmdb_id})" if tmdb_id else ""
+
+
 def suggested_target(
     kind: str,
     title: str,
@@ -147,17 +183,31 @@ def suggested_target(
     ext: str,
     movies_root: str,
     series_root: str,
+    *,
+    tmdb_id: int | None = None,
+    video_format: str | None = None,
+    video_codec: str | None = None,
 ) -> str | None:
-    """Build a canonical destination path, or None when we lack the essentials."""
+    """Build the canonical Radarr/Sonarr-style destination, or None when we lack
+    the essentials. Missing quality/id tags are dropped cleanly (no ``None``).
+
+    Movie : <movies_root>/{n} ({y})/{n} ({y}) ({vf}-{vc}) (tmdbid-{id}){ext}
+    Series: <series_root>/{n} ({y})/Season {ss}/
+                {n} ({y}) - S{ss}E{ee} ({vf}-{vc}) (tmdbid-{id}){ext}
+    """
     if not title:
         return None
+    quality = _quality_suffix(video_format, video_codec)
+    ids = _id_suffix(tmdb_id)
     if kind == "movie":
-        folder = f"{title} ({year})" if year else title
-        return str(Path(movies_root) / folder / f"{folder}{ext}")
+        base = f"{title} ({year})" if year else title
+        fname = f"{base}{quality}{ids}{ext}"
+        return str(Path(movies_root) / base / fname)
     if kind == "series" and season is not None and episode is not None:
-        show = f"{title} ({year})" if year else title
-        fname = f"{title} - S{season:02d}E{episode:02d}{ext}"
-        return str(Path(series_root) / show / f"Season {season:02d}" / fname)
+        base = f"{title} ({year})" if year else title
+        tag = f"S{season:02d}E{episode:02d}"
+        fname = f"{base} - {tag}{quality}{ids}{ext}"
+        return str(Path(series_root) / base / f"Season {season:02d}" / fname)
     return None
 
 
@@ -175,9 +225,36 @@ def normalize_suggestion(
     season = _opt_int(raw.get("season"))
     episode = _opt_int(raw.get("episode"))
     confidence = _clamp_confidence(raw.get("confidence"))
+    tmdb_id = _opt_int(raw.get("tmdb_id"))
+    video_format = _clean_token(raw.get("video_format"))
+    video_codec = _clean_token(raw.get("video_codec"))
     ext = Path(filename).suffix
-    target = suggested_target(kind, title, year, season, episode, ext, movies_root, series_root)
-    return Suggestion(filename, kind, title, year, season, episode, confidence, target)
+    target = suggested_target(
+        kind,
+        title,
+        year,
+        season,
+        episode,
+        ext,
+        movies_root,
+        series_root,
+        tmdb_id=tmdb_id,
+        video_format=video_format,
+        video_codec=video_codec,
+    )
+    return Suggestion(
+        filename,
+        kind,
+        title,
+        year,
+        season,
+        episode,
+        confidence,
+        target,
+        tmdb_id=tmdb_id,
+        video_format=video_format,
+        video_codec=video_codec,
+    )
 
 
 # --- wiring --------------------------------------------------------------------
@@ -326,6 +403,10 @@ def run(ctx: RunContext) -> ModuleResult:
     series_root = paths.get("series_root", "Series")
 
     junk, media = scan(source)
+    # Never re-process our own output: skip files already under the Radarr/Sonarr
+    # destination roots (which may live inside the source dump).
+    out_roots = [Path(movies_root).resolve(), Path(series_root).resolve()]
+    media = [p for p in media if not _under_any(p, out_roots)]
     # Largest files first: organise/free the big ones sooner (space optimisation).
     media.sort(key=_safe_size, reverse=True)
     cleaned = _cleanup(ctx, junk, empty_dirs(source))

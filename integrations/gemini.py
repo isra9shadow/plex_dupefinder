@@ -46,6 +46,12 @@ _PROMPT_HEADER = (
     '  "year"       : integer release year, or null if unknown\n'
     '  "season"     : integer season number for series, else null\n'
     '  "episode"    : integer episode number for series, else null\n'
+    '  "tmdb_id"    : the TMDB id (integer) if you are confident, else null. Do '
+    "NOT guess random numbers; null is better than a wrong id\n"
+    '  "video_format": source+resolution parsed from the name tags, e.g. '
+    '"Bluray-1080p" / "WEBDL-1080p" / "HDTV-720p" / "DVD", else null\n'
+    '  "video_codec": video codec parsed from the name tags, e.g. "x265" / '
+    '"x264" / "h265" / "h264" / "AV1", else null\n'
     '  "confidence" : integer 0-100, your honest certainty in this identification\n'
     'Do not invent titles. If you cannot tell, use type "unknown" and a low '
     "confidence. Output ONLY the JSON array, no prose, no code fences.\n\n"

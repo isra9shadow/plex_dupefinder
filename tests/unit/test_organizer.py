@@ -53,7 +53,52 @@ def test_suggested_target_movie() -> None:
 
 def test_suggested_target_series() -> None:
     t = organizer.suggested_target("series", "Show", 2020, 2, 5, ".mkv", "/M", "/S")
-    assert t == str(Path("/S") / "Show (2020)" / "Season 02" / "Show - S02E05.mkv")
+    assert t == str(Path("/S") / "Show (2020)" / "Season 02" / "Show (2020) - S02E05.mkv")
+
+
+def test_suggested_target_movie_with_quality_and_id() -> None:
+    t = organizer.suggested_target(
+        "movie",
+        "Dune",
+        2021,
+        None,
+        None,
+        ".mkv",
+        "/M",
+        "/S",
+        tmdb_id=438631,
+        video_format="Bluray-1080p",
+        video_codec="x265",
+    )
+    expected = Path("/M") / "Dune (2021)" / "Dune (2021) (Bluray-1080p-x265) (tmdbid-438631).mkv"
+    assert t == str(expected)
+
+
+def test_suggested_target_drops_missing_quality_and_id() -> None:
+    # no vf/vc/tmdb -> clean name, no empty parens or 'None'
+    t = organizer.suggested_target("movie", "Dune", 2021, None, None, ".mkv", "/M", "/S")
+    assert t == str(Path("/M") / "Dune (2021)" / "Dune (2021).mkv")
+
+
+def test_normalize_reads_quality_and_id() -> None:
+    s = organizer.normalize_suggestion(
+        {
+            "filename": "x.mkv",
+            "type": "movie",
+            "title": "Dune",
+            "year": 2021,
+            "tmdb_id": 438631,
+            "video_format": "WEBDL-2160p",
+            "video_codec": "x265",
+            "confidence": 96,
+        },
+        "x.mkv",
+        "/M",
+        "/S",
+    )
+    assert s.tmdb_id == 438631
+    assert s.video_format == "WEBDL-2160p"
+    assert s.target is not None and "(WEBDL-2160p-x265) (tmdbid-438631)" in s.target
 
 
 def test_suggested_target_unknown_is_none() -> None:
@@ -277,7 +322,13 @@ def test_identify_sends_relative_path_and_maps_back(
     # The model receives the FULL relative path (folder hint), not just the file.
     assert seen["names"] == ["Breaking Bad/S01/ep01.mkv"]
     assert result.metrics["relocated"] == 1.0
-    dest = tmp_path / "Series" / "Breaking Bad (2008)" / "Season 01" / "Breaking Bad - S01E01.mkv"
+    dest = (
+        tmp_path
+        / "Series"
+        / "Breaking Bad (2008)"
+        / "Season 01"
+        / "Breaking Bad (2008) - S01E01.mkv"
+    )
     assert dest.exists()
     assert not src.exists()
 
@@ -304,6 +355,35 @@ def test_largest_files_identified_first(monkeypatch: pytest.MonkeyPatch, tmp_pat
     )
     organizer.run(ctx)
     assert seen["names"] == ["big.mkv", "mid.mkv", "small.mkv"]  # largest first
+
+
+def test_output_dirs_excluded_from_scan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    source = tmp_path / "Manuales"
+    movies_root = source / "Radarr"  # output lives INSIDE the source dump
+    (movies_root / "Already (2020)").mkdir(parents=True)
+    (movies_root / "Already (2020)" / "Already (2020).mkv").write_bytes(b"x")
+    (source / "New.mkv").write_bytes(b"y")
+    seen: dict[str, list[str]] = {}
+
+    def fake(self: object, names: list[str], errors: object = None) -> list[dict[str, object]]:
+        seen["names"] = list(names)
+        return []
+
+    monkeypatch.setattr(organizer.GeminiClient, "identify", fake)
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = make_context(
+        tmp_path,
+        paths={
+            "organizer_source": str(source),
+            "movies_root": str(movies_root),
+            "series_root": str(tmp_path / "S"),
+        },
+        integrations={"gemini": {"api_key_ref": "GEMINI_API_KEY"}},
+    )
+    organizer.run(ctx)
+    # The already-organized file under the Radarr output is skipped; only New.mkv.
+    assert seen["names"] == ["New.mkv"]
 
 
 def test_apply_unknown_target_none_not_moved(
