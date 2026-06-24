@@ -21,7 +21,8 @@ from contextlib import contextmanager
 ROOT = os.path.dirname(os.path.realpath(__file__))
 LEGACY_CFG = os.path.join(ROOT, "config.json")
 IZUMI_CFG = os.path.join(ROOT, "config", "config.json")
-DOCKER_IMAGE = "python:3.12-slim"
+DOCKER_IMAGE = "python:3.12-slim"  # fallback (no ffprobe)
+LOCAL_IMAGE = "izumi-organizer:local"  # built from Dockerfile.organizer (has ffmpeg)
 _W = 60  # menu width
 
 
@@ -184,7 +185,7 @@ def dupefinder_diagnose_command():
     return [sys.executable, os.path.join(ROOT, "plex_dupefinder.py"), "--diagnose-paths"]
 
 
-def _docker_run(*inner):
+def _docker_run(*inner, image=DOCKER_IMAGE):
     """Wrap an izumi entrypoint in a Python 3.12 container (the host Python is too
     old for the platform). Mounts repo + media + cache so paths resolve as
     configured."""
@@ -200,22 +201,49 @@ def _docker_run(*inner):
         "/mnt/cache:/mnt/cache",
         "-w",
         "/app",
-        DOCKER_IMAGE,
+        image,
         *inner,
     ]
 
 
-def organizer_command(*, dry):
+def organizer_command(*, dry, image=DOCKER_IMAGE):
     """Argv to run the izumi organizer in a container (optionally --dry-run)."""
     inner = ["python", "run.py", "organizer"]
     if dry:
         inner.append("--dry-run")
-    return _docker_run(*inner)
+    return _docker_run(*inner, image=image)
 
 
-def health_command():
+def health_command(image=DOCKER_IMAGE):
     """Argv to run the izumi platform healthcheck in a container."""
-    return _docker_run("python", "run.py", "health")
+    return _docker_run("python", "run.py", "health", image=image)
+
+
+def ensure_image():
+    """Return the image to use: the local ffmpeg-enabled one (built on demand),
+    falling back to the plain slim image if it cannot be built (e.g. offline).
+    The ffmpeg image lets the organizer read media metadata for identification."""
+    inspect = subprocess.run(
+        ["docker", "image", "inspect", LOCAL_IMAGE], capture_output=True, text=True
+    )
+    if inspect.returncode == 0:
+        return LOCAL_IMAGE
+    print(_dim("[docker] building local image with ffmpeg (one-time)..."))
+    build = subprocess.run(
+        [
+            "docker",
+            "build",
+            "-t",
+            LOCAL_IMAGE,
+            "-f",
+            os.path.join(ROOT, "Dockerfile.organizer"),
+            ROOT,
+        ]
+    )
+    if build.returncode == 0:
+        return LOCAL_IMAGE
+    print(_warn("[docker] build failed — using slim image (no ffprobe metadata)."))
+    return DOCKER_IMAGE
 
 
 def _izumi_reports_dir():
@@ -241,10 +269,11 @@ def confirm(prompt):
 
 
 def _organizer_real(*, apply_moves):
+    image = ensure_image()
     with temp_config(
         IZUMI_CFG, lambda d: set_izumi_organizer(d, live=True, apply_moves=apply_moves)
     ):
-        _run(organizer_command(dry=False))
+        _run(organizer_command(dry=False, image=image))
 
 
 def action_dupefinder_simulate():
@@ -258,7 +287,7 @@ def action_dupefinder_real():
 
 
 def action_organizer_plan():
-    _run(organizer_command(dry=True))
+    _run(organizer_command(dry=True, image=ensure_image()))
 
 
 def action_organizer_full():
@@ -283,7 +312,7 @@ def action_full_maintenance():
 
 
 def action_health():
-    _run(health_command())
+    _run(health_command(image=ensure_image()))
 
 
 def action_show_organizer_plan():

@@ -36,6 +36,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
 
+from adapters import ffprobe
 from core import secrets
 from core.errors import (
     ConfigError,
@@ -48,6 +49,8 @@ from core.registry import register
 from core.types import FailureRecord, ModuleResult, RunContext
 from integrations.gemini import GeminiClient
 from integrations.ollama import OllamaClient
+
+_HINTS_SEP = "   |HINTS| "
 
 
 class _Identifier(Protocol):
@@ -152,6 +155,26 @@ def _safe_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:  # pragma: no cover - defensive
         return 0
+
+
+def _ffprobe_hint(path: Path) -> str:
+    """Compact identification clue from the file itself (duration / embedded
+    tags / audio languages), or '' if ffprobe is unavailable. Helps the AI on
+    cryptically-named files."""
+    try:
+        meta = ffprobe.probe_tags(path)
+    except Exception:  # probing must never break identification
+        return ""
+    bits: list[str] = []
+    if meta.duration_seconds > 0:
+        bits.append(f"dur={round(meta.duration_seconds / 60)}min")
+    for key in ("title", "show", "season_number", "episode_sort", "episode_id", "date"):
+        value = meta.tags.get(key)
+        if value:
+            bits.append(f"{key}={value}")
+    if meta.audio_languages:
+        bits.append("audio=" + ",".join(meta.audio_languages[:4]))
+    return "; ".join(bits)
 
 
 def _under_any(path: Path, roots: list[Path]) -> bool:
@@ -633,13 +656,23 @@ def run(ctx: RunContext) -> ModuleResult:
             unresolved.append(rel)
 
     if unresolved and _ai_fallback_enabled(ctx):
+        # Enrich each unresolved file with ffprobe clues (duration/tags/langs) so
+        # the model can identify cryptically-named files; echo-map back to the rel.
+        input_to_rel: dict[str, str] = {}
+        ai_inputs: list[str] = []
+        for rel in unresolved:
+            hint = _ffprobe_hint(by_rel[rel])
+            line = f"{rel}{_HINTS_SEP}{hint}" if hint else rel
+            ai_inputs.append(line)
+            input_to_rel[line] = rel
+            input_to_rel[rel] = rel  # in case the model echoes the bare path
         for name in _ai_providers(ctx):
-            if not unresolved:
+            if not ai_inputs:
                 break
             try:
                 client = _build_ai_client(ctx, name)
                 errors: list[IntegrationError] = []
-                got = client.identify(unresolved, errors=errors)
+                got = client.identify(ai_inputs, errors=errors)
             except (ConfigError, SecretError) as exc:
                 result.add_failure(FailureRecord(category="config", message=f"{name}: {exc}"))
                 continue
@@ -650,9 +683,21 @@ def run(ctx: RunContext) -> ModuleResult:
                 result.add_failure(
                     FailureRecord(category="integration", message=f"{name}: {batch_exc}")
                 )
-            raw.extend(got)
-            resolved = {e.get("filename") for e in got if isinstance(e.get("filename"), str)}
-            unresolved = [r for r in unresolved if r not in resolved]
+            done: set[str] = set()
+            for entry in got:
+                echoed = entry.get("filename")
+                mapped: str | None = None
+                if isinstance(echoed, str):
+                    mapped = input_to_rel.get(echoed) or input_to_rel.get(
+                        echoed.split(_HINTS_SEP, 1)[0].strip()
+                    )
+                if mapped is None:
+                    continue
+                entry["filename"] = mapped  # normalise to the real relative path
+                raw.append(entry)
+                done.add(mapped)
+            ai_inputs = [ln for ln in ai_inputs if input_to_rel[ln] not in done]
+        unresolved = [input_to_rel[ln] for ln in ai_inputs]
 
     # Anything still unresolved -> surface as 'unknown' so it lands in needs_review.
     for rel in unresolved:

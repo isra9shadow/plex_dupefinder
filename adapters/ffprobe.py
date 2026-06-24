@@ -22,6 +22,15 @@ class MediaProbe:
     decodes_ok: bool
 
 
+@dataclass(frozen=True)
+class MediaTags:
+    """Identification hints read from the container (best-effort)."""
+
+    duration_seconds: float
+    tags: dict[str, str]  # format-level tags (title/show/season_number/date...)
+    audio_languages: list[str]
+
+
 def _as_dict(value: object) -> dict[str, object]:
     return {str(k): v for k, v in value.items()} if isinstance(value, dict) else {}
 
@@ -41,6 +50,46 @@ def _duration(data: dict[str, object]) -> float:
         except ValueError:
             return 0.0
     return 0.0
+
+
+def _str_tags(value: object) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(v, str | int | float) and not isinstance(v, bool):
+                out[str(k).lower()] = str(v)
+    return out
+
+
+def probe_tags(path: Path, *, runner: Runner = command.run) -> MediaTags:
+    """Read duration + embedded container tags + audio languages (best-effort,
+    never raises). Used to give the AI extra clues for hard-to-name files."""
+    info = runner(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(path),
+        ]
+    )
+    if not info.ok:
+        return MediaTags(0.0, {}, [])
+    try:
+        data = _as_dict(json.loads(info.stdout))
+    except json.JSONDecodeError:
+        return MediaTags(0.0, {}, [])
+    tags = _str_tags(_as_dict(data.get("format")).get("tags"))
+    langs: list[str] = []
+    for stream in _streams(data):
+        if stream.get("codec_type") == "audio":
+            lang = _str_tags(stream.get("tags")).get("language")
+            if lang and lang not in langs:
+                langs.append(lang)
+    return MediaTags(_duration(data), tags, langs)
 
 
 def probe(path: Path, *, runner: Runner = command.run, smoke: bool = True) -> MediaProbe:

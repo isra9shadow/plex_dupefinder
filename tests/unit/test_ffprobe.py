@@ -48,3 +48,31 @@ def test_probe_ffprobe_failure() -> None:
     assert not probe.has_video
     assert probe.duration_seconds == 0.0
     assert probe.decodes_ok
+
+
+def test_probe_tags_reads_tags_and_languages() -> None:
+    info = json.dumps(
+        {
+            "format": {"duration": "1440.0", "tags": {"title": "Akira", "show": "X", "BPS": 1}},
+            "streams": [
+                {"codec_type": "video"},
+                {"codec_type": "audio", "tags": {"language": "jpn"}},
+                {"codec_type": "audio", "tags": {"language": "eng"}},
+            ],
+        }
+    )
+    mt = ffprobe.probe_tags(Path("x.mkv"), runner=_runner(info))
+    assert mt.duration_seconds == 1440.0
+    assert mt.tags["title"] == "Akira"
+    assert mt.tags["bps"] == "1"  # lower-cased, stringified
+    assert mt.audio_languages == ["jpn", "eng"]
+
+
+def test_probe_tags_failure_is_empty() -> None:
+    def run(argv: Sequence[str]) -> CommandResult:
+        return CommandResult(tuple(argv), 1, "", "no ffprobe")
+
+    mt = ffprobe.probe_tags(Path("x"), runner=run)
+    assert mt.duration_seconds == 0.0
+    assert mt.tags == {}
+    assert mt.audio_languages == []

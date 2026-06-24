@@ -220,6 +220,52 @@ def test_parseable_file_does_not_call_ai(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert plan["confident"][0]["title"] == "Show"
 
 
+def test_ai_input_enriched_with_ffprobe_hints(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from adapters.ffprobe import MediaTags
+
+    source = tmp_path / "manuales"
+    source.mkdir()
+    (source / "cryptic_xyz.mkv").write_bytes(b"d")  # parser can't resolve -> AI
+    monkeypatch.setattr(
+        organizer.ffprobe,
+        "probe_tags",
+        lambda p: MediaTags(1440.0, {"title": "Akira"}, ["jpn"]),
+    )
+    seen: dict[str, list[str]] = {}
+
+    def fake(self: object, names: list[str], errors: object = None) -> list[dict[str, object]]:
+        seen["names"] = list(names)
+        return [
+            {
+                "filename": "cryptic_xyz.mkv",  # echo the path part (before |HINTS|)
+                "type": "movie",
+                "title": "Akira",
+                "year": 1988,
+                "confidence": 96,
+            }
+        ]
+
+    monkeypatch.setattr(organizer.GeminiClient, "identify", fake)
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = make_context(
+        tmp_path,
+        paths={"organizer_source": str(source), "movies_root": "/M", "series_root": "/S"},
+        integrations={"gemini": {"api_key_ref": "GEMINI_API_KEY"}},
+    )
+    result = organizer.run(ctx)
+
+    assert result.ok
+    assert seen["names"] and "|HINTS|" in seen["names"][0]
+    assert "title=Akira" in seen["names"][0] and "dur=24min" in seen["names"][0]
+    plan = json.loads(
+        (tmp_path / "reports" / "organizer" / "plan.json").read_text(encoding="utf-8")
+    )
+    assert plan["confident"][0]["title"] == "Akira"  # mapped back despite the hints suffix
+
+
 def test_ai_cascade_ollama_first_then_gemini(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

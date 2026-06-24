@@ -57,8 +57,11 @@ _PROMPT_HEADER = (
     '"x264" / "h265" / "h264" / "AV1", else null\n'
     '  "confidence" : integer 0-100, your honest certainty in this identification\n'
     'Do not invent titles. If you cannot tell, use type "unknown" and a low '
-    "confidence. Output ONLY the JSON array, no prose, no code fences.\n\n"
-    "Paths:\n"
+    "confidence. Output ONLY the JSON array, no prose, no code fences.\n"
+    "A line may have a '   |HINTS| ' suffix with extra clues read from the file "
+    "(duration / embedded title/show/season/episode tags / audio languages) — "
+    'USE them, but set "filename" to the path BEFORE that suffix, echoed verbatim.'
+    "\n\nPaths:\n"
 )
 
 
