@@ -29,6 +29,7 @@ Config (config.json):
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -60,6 +61,43 @@ _MEDIA_SUFFIXES = {
     ".m2ts",
 }
 _DEFAULT_THRESHOLD = 90.0
+
+# --- local heuristic parser (no AI / no quota) ---------------------------------
+# Most files already carry all the info in their name/path (Sonarr/Radarr style),
+# so a deterministic parser identifies them for free; the AI is only a fallback
+# for what these patterns cannot resolve.
+_SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})|(?<!\d)(\d{1,2})x(\d{2,3})(?!\d)")
+_YEAR_RE = re.compile(r"\((\d{4})\)")
+_SOURCE_RE = re.compile(
+    r"(?i)\b(remux|blu-?ray|bdrip|brrip|web-?dl|webrip|hdtv|pdtv|dvdrip|dvd|hdrip|sdtv)\b"
+)
+_RES_RE = re.compile(r"(?i)\b(2160p|1080p|1080i|720p|576p|480p|4k)\b")
+_CODEC_RE = re.compile(r"(?i)\b(x265|h\.?265|hevc|x264|h\.?264|avc|av1|xvid|vp9)\b")
+_SOURCE_NORM = {
+    "remux": "Remux",
+    "bluray": "Bluray",
+    "bdrip": "Bluray",
+    "brrip": "Bluray",
+    "webdl": "WEBDL",
+    "webrip": "WEBRip",
+    "hdrip": "WEBRip",
+    "hdtv": "HDTV",
+    "pdtv": "HDTV",
+    "dvdrip": "DVD",
+    "dvd": "DVD",
+    "sdtv": "SDTV",
+}
+_CODEC_NORM = {
+    "x265": "x265",
+    "h265": "x265",
+    "hevc": "x265",
+    "x264": "x264",
+    "h264": "x264",
+    "avc": "x264",
+    "av1": "AV1",
+    "xvid": "XviD",
+    "vp9": "VP9",
+}
 
 
 @dataclass(frozen=True)
@@ -257,6 +295,85 @@ def normalize_suggestion(
     )
 
 
+def _clean_title(text: str) -> str:
+    """Tidy a raw title fragment: dots/underscores -> spaces, trim separators."""
+    out = re.sub(r"[._]+", " ", text)
+    return re.sub(r"\s{2,}", " ", out).strip(" -._")
+
+
+def _parse_quality(path: str) -> tuple[str | None, str | None]:
+    """Best-effort (video_format, video_codec) from the name/path tags."""
+    src_m = _SOURCE_RE.search(path)
+    res_m = _RES_RE.search(path)
+    cod_m = _CODEC_RE.search(path)
+    source = _SOURCE_NORM.get(re.sub(r"[^a-z0-9]", "", src_m.group(1).lower())) if src_m else None
+    res = res_m.group(1).lower() if res_m else None
+    if res == "4k":
+        res = "2160p"
+    if source and res:
+        vf: str | None = f"{source}-{res}"
+    else:
+        vf = source or res
+    vc = _CODEC_NORM.get(re.sub(r"[^a-z0-9]", "", cod_m.group(1).lower())) if cod_m else None
+    return vf, vc
+
+
+def parse_media_filename(rel_path: str) -> dict[str, object] | None:
+    """Identify a media file from its relative path WITHOUT calling the AI.
+
+    Returns a raw entry shaped like a Gemini suggestion (so it flows through
+    ``normalize_suggestion`` unchanged), or None when the patterns cannot resolve
+    it confidently — those are left for the AI fallback. ``tmdb_id`` is always
+    None here (the filename does not carry it; *arr import or the AI can add it).
+    """
+    norm = rel_path.replace("\\", "/")
+    parts = [p for p in norm.split("/") if p]
+    stem = parts[-1].rsplit(".", 1)[0] if parts else norm
+    vf, vc = _parse_quality(norm)
+    year_m = _YEAR_RE.search(stem)
+    year = int(year_m.group(1)) if year_m else None
+    se = _SE_RE.search(stem)
+    if se:
+        season = int(se.group(1) or se.group(3))
+        episode = int(se.group(2) or se.group(4))
+        title = _clean_title(_YEAR_RE.sub("", stem[: se.start()]))
+        if not title and len(parts) >= 2:  # fall back to the show folder name
+            title = _clean_title(_YEAR_RE.sub("", parts[0]))
+        if not title:
+            return None
+        return {
+            "filename": rel_path,
+            "type": "series",
+            "title": title,
+            "year": year,
+            "season": season,
+            "episode": episode,
+            "video_format": vf,
+            "video_codec": vc,
+            "tmdb_id": None,
+            "confidence": 95,
+        }
+    if year:
+        title = _clean_title(stem[: year_m.start()]) if year_m else ""
+        if not title and len(parts) >= 2:
+            title = _clean_title(_YEAR_RE.sub("", parts[-2]))
+        if not title:
+            return None
+        return {
+            "filename": rel_path,
+            "type": "movie",
+            "title": title,
+            "year": year,
+            "season": None,
+            "episode": None,
+            "video_format": vf,
+            "video_codec": vc,
+            "tmdb_id": None,
+            "confidence": 90,
+        }
+    return None  # ambiguous -> let the AI try
+
+
 # --- wiring --------------------------------------------------------------------
 
 
@@ -291,6 +408,14 @@ def _apply_enabled(ctx: RunContext) -> bool:
     if not isinstance(value, bool):
         raise ConfigError("integrations.gemini.apply must be a boolean")
     return value
+
+
+def _ai_fallback_enabled(ctx: RunContext) -> bool:
+    """Whether to call Gemini for files the local parser could not resolve.
+    Default True; set integrations.gemini.ai_fallback=false to stay 100% local
+    (no quota use)."""
+    value = ctx.config.integrations.get("gemini", {}).get("ai_fallback", True)
+    return value if isinstance(value, bool) else True
 
 
 def _cleanup(ctx: RunContext, junk: list[Path], empties: list[Path]) -> int:
@@ -416,21 +541,32 @@ def run(ctx: RunContext) -> ModuleResult:
     # names as title hints; map results back by the echoed path, not by position
     # (a skipped/failed batch must not misalign the rest).
     by_rel = {p.relative_to(source).as_posix(): p for p in media}
-    suggestions: list[Suggestion] = []
-    if media:
+    # Local parser first (free, no quota); AI only for what it cannot resolve.
+    raw: list[dict[str, object]] = []
+    unresolved: list[str] = []
+    for rel in by_rel:
+        entry = parse_media_filename(rel)
+        if entry is not None:
+            raw.append(entry)
+        else:
+            unresolved.append(rel)
+
+    if unresolved and _ai_fallback_enabled(ctx):
         try:
             errors: list[IntegrationError] = []
-            raw = _gemini(ctx).identify(list(by_rel), errors=errors)
+            raw.extend(_gemini(ctx).identify(unresolved, errors=errors))
             for exc in errors:
                 result.add_failure(FailureRecord(category="integration", message=str(exc)))
-            for entry in raw:
-                name = entry.get("filename")
-                fallback = name if isinstance(name, str) and name else ""
-                suggestions.append(normalize_suggestion(entry, fallback, movies_root, series_root))
         except (ConfigError, SecretError) as exc:
             result.add_failure(FailureRecord(category="config", message=str(exc)))
         except IntegrationError as exc:
             result.add_failure(FailureRecord(category="integration", message=str(exc)))
+
+    suggestions: list[Suggestion] = []
+    for entry in raw:
+        name = entry.get("filename")
+        fallback = name if isinstance(name, str) and name else ""
+        suggestions.append(normalize_suggestion(entry, fallback, movies_root, series_root))
 
     threshold = _threshold(ctx)
     confident = sum(1 for s in suggestions if s.confidence >= threshold and s.target)

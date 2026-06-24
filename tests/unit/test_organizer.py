@@ -120,6 +120,73 @@ def test_normalize_suggestion_clamps_and_defaults() -> None:
     assert s.target is not None
 
 
+# --- local heuristic parser (no AI) --------------------------------------------
+
+
+def test_parse_series_from_well_named_file() -> None:
+    rel = (
+        "Naruto Shippuden/Season 22/"
+        "Naruto Shippuden (2007) - S22E34 - 492 - Cloud [WEBDL-1080p][AAC 2.0][JA][h265 8bit].mkv"
+    )
+    e = organizer.parse_media_filename(rel)
+    assert e is not None
+    assert e["type"] == "series"
+    assert e["title"] == "Naruto Shippuden"
+    assert e["year"] == 2007
+    assert e["season"] == 22
+    assert e["episode"] == 34
+    assert e["video_format"] == "WEBDL-1080p"
+    assert e["video_codec"] == "x265"
+
+
+def test_parse_movie_from_well_named_file() -> None:
+    e = organizer.parse_media_filename("Dune (2021) (Bluray-1080p) [x264].mkv")
+    assert e is not None
+    assert e["type"] == "movie"
+    assert e["title"] == "Dune"
+    assert e["year"] == 2021
+    assert e["video_format"] == "Bluray-1080p"
+    assert e["video_codec"] == "x264"
+
+
+def test_parse_series_title_falls_back_to_show_folder() -> None:
+    # filename has no title before the SxxEyy -> use the top folder name
+    e = organizer.parse_media_filename("Breaking Bad/S01E01 [HDTV-720p][x265].mkv")
+    assert e is not None
+    assert e["title"] == "Breaking Bad"
+    assert e["season"] == 1
+    assert e["episode"] == 1
+    assert e["video_format"] == "HDTV-720p"
+
+
+def test_parse_returns_none_for_ambiguous() -> None:
+    assert organizer.parse_media_filename("random_clip.mkv") is None
+
+
+def test_parseable_file_does_not_call_ai(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    source = tmp_path / "manuales"
+    (source / "Show (2020)").mkdir(parents=True)
+    (source / "Show (2020)" / "Show (2020) - S01E01 [WEBDL-1080p][x265].mkv").write_bytes(b"d")
+
+    def boom(self: object, names: list[str], errors: object = None) -> list[dict[str, object]]:
+        raise AssertionError("AI must not be called for parseable files")
+
+    monkeypatch.setattr(organizer.GeminiClient, "identify", boom)
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = make_context(
+        tmp_path,
+        paths={"organizer_source": str(source), "movies_root": "/M", "series_root": "/S"},
+        integrations={"gemini": {"api_key_ref": "GEMINI_API_KEY"}},
+    )
+    result = organizer.run(ctx)
+    assert result.ok  # parser resolved it locally; no Gemini call, no failure
+    plan = json.loads(
+        (tmp_path / "reports" / "organizer" / "plan.json").read_text(encoding="utf-8")
+    )
+    assert plan["confident"][0]["title"] == "Show"
+
+
 # --- run integration -----------------------------------------------------------
 
 
