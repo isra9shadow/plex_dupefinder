@@ -166,6 +166,17 @@ base_config = {
     # poll for fresh metadata before discovery scores it. This avoids
     # decisions based on stale codec/bitrate/duration in Plex. Slow on
     # large libraries (sequential per item), so default OFF.
+    #
+    # KNOWN ISSUE — keep OFF unless you truly need a metadata refresh: the
+    # analyze()+reload() churn leaves the PASS 1 item in a transient state where
+    # a present part can be read as missing, so PASS 2 (no analyze) then sees the
+    # part reappear -> "existence changed False->True" + "keeper changed" drift,
+    # and the group is skipped on every run. Observed in production: 339/345
+    # groups "sane but unchanged" (0 actually refreshed), ~46 min of discovery,
+    # and most duplicates perpetually skipped. With it OFF the same library
+    # discovered in ~1s and the stuck duplicates were cleaned. The filesystem is
+    # authoritative for existence (see TRUST_LOCAL_FS_EXISTENCE), so PASS 0 is
+    # rarely worth its cost or risk.
     'PRE_ANALYZE_DUPLICATES': False,
     'ANALYZE_TIMEOUT_SECONDS': 60,
 
