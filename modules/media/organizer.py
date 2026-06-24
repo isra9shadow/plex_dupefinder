@@ -82,8 +82,18 @@ _DEFAULT_THRESHOLD = 90.0
 # Most files already carry all the info in their name/path (Sonarr/Radarr style),
 # so a deterministic parser identifies them for free; the AI is only a fallback
 # for what these patterns cannot resolve.
-_SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})|(?<!\d)(\d{1,2})x(\d{2,3})(?!\d)")
+_SE_RE = re.compile(r"[SsTt](\d{1,2})[Ee](\d{1,3})|(?<!\d)(\d{1,2})x(\d{2,3})(?!\d)")
 _YEAR_RE = re.compile(r"\((\d{4})\)")
+# Spanish releases: "Temporada N ... Cap/Capitulo NNN"
+_TEMPORADA_RE = re.compile(r"(?i)temporada\s*(\d{1,2})")
+_CAP_RE = re.compile(r"(?i)cap(?:[ií]tulo)?\.?\s*0*(\d{1,4})")
+# Year as a prefix ("2022 - Title") or embedded bare ("..._2012_...").
+_YEAR_PREFIX_RE = re.compile(r"^\s*((?:19|20)\d{2})\s*[-_.\s]\s*(.+)$")
+_BARE_YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+_DATE_RE = re.compile(r"(?:19|20)\d{2}[-_.]\d{2}[-_.]\d{2}")  # a timestamp, not a film year
+_EDITION_TAIL_RE = re.compile(
+    r"(?i)\s*[-_.]\s*(NEW|VOSE|VOSI|VO|MULTI|DUAL|SUB|SUBS|REMUX|HD|MUDA|MUDO|SONORA)\b.*$"
+)
 _SOURCE_RE = re.compile(
     r"(?i)\b(remux|blu-?ray|bdrip|brrip|web-?dl|webrip|hdtv|pdtv|dvdrip|dvd|hdrip|sdtv)\b"
 )
@@ -376,6 +386,23 @@ def _parse_quality(path: str) -> tuple[str | None, str | None]:
     return vf, vc
 
 
+def _movie_entry(
+    rel_path: str, title: str, year: int, vf: str | None, vc: str | None, confidence: int
+) -> dict[str, object]:
+    return {
+        "filename": rel_path,
+        "type": "movie",
+        "title": title,
+        "year": year,
+        "season": None,
+        "episode": None,
+        "video_format": vf,
+        "video_codec": vc,
+        "tmdb_id": None,
+        "confidence": confidence,
+    }
+
+
 def parse_media_filename(rel_path: str) -> dict[str, object] | None:
     """Identify a media file from its relative path WITHOUT calling the AI.
 
@@ -387,6 +414,7 @@ def parse_media_filename(rel_path: str) -> dict[str, object] | None:
     norm = rel_path.replace("\\", "/")
     parts = [p for p in norm.split("/") if p]
     stem = parts[-1].rsplit(".", 1)[0] if parts else norm
+    norm_stem = re.sub(r"[._]+", " ", stem)  # underscores/dots -> spaces for matching
     vf, vc = _parse_quality(norm)
     year_m = _YEAR_RE.search(stem)
     year = int(year_m.group(1)) if year_m else None
@@ -417,6 +445,28 @@ def parse_media_filename(rel_path: str) -> dict[str, object] | None:
             "tvdb_id": None,
             "confidence": 95,
         }
+    # Spanish releases: "<title> Temporada N ... Cap/Capitulo NNN".
+    temp_m = _TEMPORADA_RE.search(norm_stem)
+    cap_m = _CAP_RE.search(norm_stem)
+    if temp_m and cap_m:
+        title = _clean_title(norm_stem[: temp_m.start()])
+        if not title and len(parts) >= 2:
+            title = _clean_title(_YEAR_RE.sub("", parts[0]))
+        if title:
+            return {
+                "filename": rel_path,
+                "type": "series",
+                "title": title,
+                "year": year,
+                "season": int(temp_m.group(1)),
+                "episode": int(cap_m.group(1)),
+                "episode_title": None,
+                "video_format": vf,
+                "video_codec": vc,
+                "tvdb_id": None,
+                "confidence": 90,
+            }
+
     if year and year_m:
         # If there is descriptive text AFTER the year (e.g. "- EP. 01 - ...",
         # "- Documentary", "- Part 4"), the simple "title before year" would
@@ -442,6 +492,20 @@ def parse_media_filename(rel_path: str) -> dict[str, object] | None:
             "tmdb_id": None,
             "confidence": 90,
         }
+    # Year as a prefix or embedded bare (no parentheses). Skip timestamp-named
+    # files (e.g. home videos "video_2026-06-17_...") via the date guard.
+    if not _DATE_RE.search(norm_stem):
+        ypre = _YEAR_PREFIX_RE.match(norm_stem)
+        if ypre:
+            rest = re.split(r"[\[(]", ypre.group(2), maxsplit=1)[0]
+            title = _clean_title(_EDITION_TAIL_RE.sub("", rest))
+            if title and re.search(r"[A-Za-z]", title):
+                return _movie_entry(rel_path, title, int(ypre.group(1)), vf, vc, 88)
+        bare = _BARE_YEAR_RE.search(norm_stem)
+        if bare:
+            title = _clean_title(norm_stem[: bare.start()])
+            if title and len(title) >= 3 and re.search(r"[A-Za-z]", title):
+                return _movie_entry(rel_path, title, int(bare.group(1)), vf, vc, 85)
     return None  # ambiguous -> let the AI try
 
 

@@ -23,6 +23,7 @@ LEGACY_CFG = os.path.join(ROOT, "config.json")
 IZUMI_CFG = os.path.join(ROOT, "config", "config.json")
 DOCKER_IMAGE = "python:3.12-slim"  # fallback (no ffprobe)
 LOCAL_IMAGE = "izumi-organizer:local"  # built from Dockerfile.organizer (has ffmpeg)
+RUN_AS = "99:100"  # Unraid nobody:users — moved files stay manipulable by *arr/user
 _W = 60  # menu width
 
 
@@ -193,6 +194,8 @@ def _docker_run(*inner, image=DOCKER_IMAGE):
         "docker",
         "run",
         "--rm",
+        "--user",
+        RUN_AS,
         "-v",
         f"{ROOT}:/app",
         "-v",

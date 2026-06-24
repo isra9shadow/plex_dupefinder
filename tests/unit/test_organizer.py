@@ -196,6 +196,44 @@ def test_parse_returns_none_for_ambiguous() -> None:
     assert organizer.parse_media_filename("random_clip.mkv") is None
 
 
+def test_parse_year_prefix_movie() -> None:
+    e = organizer.parse_media_filename("extracted/2022 - Hotel Transilvania 4 - NEW.mkv")
+    assert e is not None
+    assert e["type"] == "movie"
+    assert e["title"] == "Hotel Transilvania 4"
+    assert e["year"] == 2022
+
+
+def test_parse_txex_series() -> None:
+    e = organizer.parse_media_filename("Ladybug/[Ladybug] T5E03 - Destruccion.mkv")
+    assert e is not None
+    assert e["type"] == "series"
+    assert e["season"] == 5
+    assert e["episode"] == 3
+
+
+def test_parse_spanish_temporada_cap_series() -> None:
+    e = organizer.parse_media_filename("Merli_Sapere_Aude_Temporada_1_HDTV_720pCap_101AC3_5_1.mkv")
+    assert e is not None
+    assert e["type"] == "series"
+    assert e["title"] == "Merli Sapere Aude"
+    assert e["season"] == 1
+    assert e["episode"] == 101
+
+
+def test_parse_bare_embedded_year_movie() -> None:
+    e = organizer.parse_media_filename("Trumbo_La_Lista_Negra_2015_Spanish_English_Subs_HD.mkv")
+    assert e is not None
+    assert e["type"] == "movie"
+    assert e["year"] == 2015
+    assert "Trumbo" in str(e["title"])
+
+
+def test_parse_timestamp_home_video_is_none() -> None:
+    # "video_2026-06-17_..." is a date-stamped home video, not a film -> review
+    assert organizer.parse_media_filename("video_2026-06-17_23-48-32.mp4") is None
+
+
 def test_parseable_file_does_not_call_ai(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     source = tmp_path / "manuales"
     (source / "Show (2020)").mkdir(parents=True)
@@ -326,7 +364,7 @@ def test_run_fails_without_source(tmp_path: Path) -> None:
 def test_run_cleans_junk_and_reports(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     source = tmp_path / "manuales"
     source.mkdir()
-    (source / "Dune.2021.mkv").write_bytes(b"data")
+    (source / "Dune cryptic.mkv").write_bytes(b"data")
     (source / "Dune.nfo").write_text("x", encoding="utf-8")
     (source / "empty").mkdir()
 
@@ -335,7 +373,7 @@ def test_run_cleans_junk_and_reports(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     ) -> list[dict[str, object]]:
         return [
             {
-                "filename": "Dune.2021.mkv",
+                "filename": "Dune cryptic.mkv",
                 "type": "movie",
                 "title": "Dune",
                 "year": 2021,
@@ -357,7 +395,7 @@ def test_run_cleans_junk_and_reports(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert result.ok
     assert result.quarantined == 2  # the .nfo and the empty dir
     assert not (source / "Dune.nfo").exists()  # moved to quarantine (LIVE mode)
-    assert (source / "Dune.2021.mkv").exists()  # media never moved (report-only)
+    assert (source / "Dune cryptic.mkv").exists()  # media never moved (report-only)
     plan_file = tmp_path / "reports" / "organizer" / "plan.json"
     plan = json.loads(plan_file.read_text(encoding="utf-8"))
     assert plan["confident"][0]["title"] == "Dune"
@@ -388,7 +426,7 @@ def _movie_identify(title: str = "Dune", year: int = 2021, confidence: int = 97)
     def fake(self: object, names: list[str], errors: object = None) -> list[dict[str, object]]:
         return [
             {
-                "filename": "Dune.2021.mkv",
+                "filename": "Dune cryptic.mkv",
                 "type": "movie",
                 "title": title,
                 "year": year,
@@ -424,7 +462,7 @@ def test_apply_disabled_by_default_does_not_move(
 ) -> None:
     source = tmp_path / "manuales"
     source.mkdir()
-    (source / "Dune.2021.mkv").write_bytes(b"data")
+    (source / "Dune cryptic.mkv").write_bytes(b"data")
     monkeypatch.setattr(organizer.GeminiClient, "identify", _movie_identify())
     monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
 
@@ -443,13 +481,13 @@ def test_apply_disabled_by_default_does_not_move(
 
     assert result.ok
     assert result.metrics["relocated"] == 0.0
-    assert (source / "Dune.2021.mkv").exists()  # never moved
+    assert (source / "Dune cryptic.mkv").exists()  # never moved
 
 
 def test_apply_live_moves_confident_movie(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     source = tmp_path / "manuales"
     source.mkdir()
-    src_file = source / "Dune.2021.mkv"
+    src_file = source / "Dune cryptic.mkv"
     src_file.write_bytes(b"data")
     monkeypatch.setattr(organizer.GeminiClient, "identify", _movie_identify())
     monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
@@ -472,7 +510,7 @@ def test_apply_live_moves_confident_movie(monkeypatch: pytest.MonkeyPatch, tmp_p
 def test_apply_low_confidence_not_moved(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     source = tmp_path / "manuales"
     source.mkdir()
-    src_file = source / "Dune.2021.mkv"
+    src_file = source / "Dune cryptic.mkv"
     src_file.write_bytes(b"data")
     monkeypatch.setattr(organizer.GeminiClient, "identify", _movie_identify(confidence=50))
     monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
@@ -609,7 +647,7 @@ def test_apply_dry_run_plans_but_does_not_move(
 ) -> None:
     source = tmp_path / "manuales"
     source.mkdir()
-    src_file = source / "Dune.2021.mkv"
+    src_file = source / "Dune cryptic.mkv"
     src_file.write_bytes(b"data")
     monkeypatch.setattr(organizer.GeminiClient, "identify", _movie_identify())
     monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
@@ -632,14 +670,14 @@ def test_apply_traversal_title_is_sanitised_inside_roots(
 ) -> None:
     source = tmp_path / "manuales"
     source.mkdir()
-    src_file = source / "Dune.2021.mkv"
+    src_file = source / "Dune cryptic.mkv"
     src_file.write_bytes(b"data")
 
     def fake(self: object, names: list[str], errors: object = None) -> list[dict[str, object]]:
         # Hallucinated title with traversal — must NOT escape the movies root.
         return [
             {
-                "filename": "Dune.2021.mkv",
+                "filename": "Dune cryptic.mkv",
                 "type": "movie",
                 "title": "../../../../etc/Dune",
                 "year": 2021,
@@ -667,7 +705,7 @@ def test_apply_collision_is_skipped_gracefully(
 ) -> None:
     source = tmp_path / "manuales"
     source.mkdir()
-    src_file = source / "Dune.2021.mkv"
+    src_file = source / "Dune cryptic.mkv"
     src_file.write_bytes(b"data")
     # Pre-create the destination so relocate raises SafetyError (no clobber).
     dest = tmp_path / "Movies" / "Dune (2021)" / "Dune (2021).mkv"
