@@ -75,13 +75,10 @@ def dupefinder_diagnose_command():
     return [sys.executable, os.path.join(ROOT, "plex_dupefinder.py"), "--diagnose-paths"]
 
 
-def organizer_command(*, dry):
-    """Argv to run the izumi organizer inside a Python 3.12 container (the host
-    Python is too old for the platform). Mounts the repo + media + cache so paths
-    resolve exactly as configured."""
-    inner = ["python", "run.py", "organizer"]
-    if dry:
-        inner.append("--dry-run")
+def _docker_run(*inner):
+    """Wrap an izumi entrypoint in a Python 3.12 container (the host Python is too
+    old for the platform). Mounts repo + media + cache so paths resolve as
+    configured."""
     return [
         "docker",
         "run",
@@ -97,6 +94,19 @@ def organizer_command(*, dry):
         DOCKER_IMAGE,
         *inner,
     ]
+
+
+def organizer_command(*, dry):
+    """Argv to run the izumi organizer in a container (optionally --dry-run)."""
+    inner = ["python", "run.py", "organizer"]
+    if dry:
+        inner.append("--dry-run")
+    return _docker_run(*inner)
+
+
+def health_command():
+    """Argv to run the izumi platform healthcheck in a container."""
+    return _docker_run("python", "run.py", "health")
 
 
 def _izumi_reports_dir():
@@ -117,13 +127,30 @@ def _run(argv):
     return subprocess.call(argv)
 
 
+def confirm(prompt):
+    """Ask for explicit confirmation before a real (acting) operation."""
+    try:
+        return input(prompt + " [s/N]: ").strip().lower() in ("s", "si", "sí", "y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def _organizer_real(*, apply_moves):
+    with temp_config(
+        IZUMI_CFG, lambda d: set_izumi_organizer(d, live=True, apply_moves=apply_moves)
+    ):
+        _run(organizer_command(dry=False))
+
+
 def action_dupefinder_simulate():
     with temp_config(LEGACY_CFG, lambda d: set_legacy_dry_run(d, True)):
         _run(dupefinder_command())
 
 
 def action_dupefinder_real():
-    _run(dupefinder_command())
+    if confirm("Esto MOVERÁ los duplicados a cuarentena (real). ¿Continuar?"):
+        _run(dupefinder_command())
 
 
 def action_organizer_plan():
@@ -131,13 +158,28 @@ def action_organizer_plan():
 
 
 def action_organizer_full():
-    with temp_config(IZUMI_CFG, lambda d: set_izumi_organizer(d, live=True, apply_moves=True)):
-        _run(organizer_command(dry=False))
+    if confirm("Esto limpiará basura y MOVERÁ ficheros a su sitio (real). ¿Continuar?"):
+        _organizer_real(apply_moves=True)
 
 
 def action_organizer_cleanup_only():
-    with temp_config(IZUMI_CFG, lambda d: set_izumi_organizer(d, live=True, apply_moves=False)):
-        _run(organizer_command(dry=False))
+    if confirm("Esto moverá la basura a cuarentena (real, recuperable). ¿Continuar?"):
+        _organizer_real(apply_moves=False)
+
+
+def action_full_maintenance():
+    """Recommended order: remove duplicates first, then clean + organize."""
+    if not confirm("Mantenimiento completo REAL (duplicados → organizar). ¿Continuar?"):
+        return
+    print("\n[1/2] Quitando duplicados (cuarentena real)...")
+    _run(dupefinder_command())
+    print("\n[2/2] Limpiando basura + organizando ficheros (real)...")
+    _organizer_real(apply_moves=True)
+    print("\nMantenimiento completo terminado.")
+
+
+def action_health():
+    _run(health_command())
 
 
 def action_show_organizer_plan():
@@ -155,11 +197,13 @@ def action_diagnose_paths():
 
 MENU = [
     ("Buscar duplicados — SIMULAR (no borra nada)", action_dupefinder_simulate),
-    ("Buscar duplicados — EJECUTAR (mueve a cuarentena, real)", action_dupefinder_real),
+    ("Buscar duplicados — EJECUTAR (cuarentena real)", action_dupefinder_real),
     ("Organizar — Ver plan IA (no toca nada)", action_organizer_plan),
     ("Organizar — Limpiar basura + MOVER ficheros (real)", action_organizer_full),
     ("Organizar — Solo limpiar basura (no mueve ficheros)", action_organizer_cleanup_only),
+    ("Mantenimiento completo (orden recomendado: duplicados → organizar)", action_full_maintenance),
     ("Ver último plan del organizador", action_show_organizer_plan),
+    ("Healthcheck de la plataforma", action_health),
     ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),
 ]
 

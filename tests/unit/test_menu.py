@@ -35,6 +35,40 @@ def test_organizer_command_mounts_repo_media_cache() -> None:
     assert "/mnt/cache:/mnt/cache" in joined
 
 
+def test_health_command_runs_health_in_container() -> None:
+    argv = menu.health_command()
+    assert argv[0] == "docker"
+    assert argv[-3:] == ["python", "run.py", "health"]
+    assert menu.DOCKER_IMAGE in argv
+
+
+def test_full_maintenance_runs_dupefinder_then_organizer(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(menu, "_run", lambda argv: calls.append(argv) or 0)
+    monkeypatch.setattr("builtins.input", lambda *a: "s")  # confirm yes
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _noop(*a, **k):
+        yield
+
+    monkeypatch.setattr(menu, "temp_config", _noop)  # don't touch real config files
+    menu.action_full_maintenance()
+
+    assert len(calls) == 2
+    assert calls[0][-1].endswith("plex_dupefinder.py")  # duplicates first
+    assert "organizer" in calls[1]  # then organize
+
+
+def test_destructive_action_aborts_when_declined(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(menu, "_run", lambda argv: calls.append(argv))
+    monkeypatch.setattr("builtins.input", lambda *a: "n")  # decline
+    menu.action_dupefinder_real()
+    assert calls == []  # nothing ran
+
+
 def test_set_legacy_dry_run_toggles_flag() -> None:
     assert menu.set_legacy_dry_run({}, True)["DRY_RUN"] is True
     assert menu.set_legacy_dry_run({}, False)["DRY_RUN"] is False
