@@ -135,8 +135,41 @@ def test_parse_series_from_well_named_file() -> None:
     assert e["year"] == 2007
     assert e["season"] == 22
     assert e["episode"] == 34
+    assert e["episode_title"] == "Cloud"  # captured from the name
     assert e["video_format"] == "WEBDL-1080p"
     assert e["video_codec"] == "x265"
+
+
+def test_parse_movie_defers_to_ai_when_text_after_year() -> None:
+    # Year before the part/extra text -> collision-prone -> parser declines (None)
+    assert organizer.parse_media_filename("Tih-Minh (1918) - EP. 01 - Prologo [1080p].mkv") is None
+    assert organizer.parse_media_filename("El chico (1921) - Documentary [1080p].mkv") is None
+    # Year at the END (no trailing text) -> safe, still claimed
+    assert organizer.parse_media_filename("Les Vampires - EP.6 - Los ojos (1916) [1080p].mkv")
+
+
+def test_suggested_target_series_full_ascii() -> None:
+    t = organizer.suggested_target(
+        "series",
+        "Señora",  # accented -> must be stripped in the path
+        2020,
+        4,
+        17,
+        ".mkv",
+        "/M",
+        "/S",
+        episode_title="Adiós, niño",
+        tvdb_id=12345,
+        video_format="WEBDL-1080p",
+        video_codec="x265",
+    )
+    expected = (
+        Path("/S")
+        / "Senora (2020)"
+        / "Season 04"
+        / "Senora (2020) - S04E17 - Adios, nino (WEBDL-1080p-x265) (tvdbid-12345).mkv"
+    )
+    assert t == str(expected)
 
 
 def test_parse_movie_from_well_named_file() -> None:
@@ -548,7 +581,7 @@ def test_apply_dry_run_plans_but_does_not_move(
     assert plan["applied"][0]["dry_run"] is True
 
 
-def test_apply_target_outside_roots_is_skipped_gracefully(
+def test_apply_traversal_title_is_sanitised_inside_roots(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = tmp_path / "manuales"
@@ -557,7 +590,7 @@ def test_apply_target_outside_roots_is_skipped_gracefully(
     src_file.write_bytes(b"data")
 
     def fake(self: object, names: list[str], errors: object = None) -> list[dict[str, object]]:
-        # Hallucinated title with traversal → target escapes the movies root.
+        # Hallucinated title with traversal — must NOT escape the movies root.
         return [
             {
                 "filename": "Dune.2021.mkv",
@@ -574,11 +607,13 @@ def test_apply_target_outside_roots_is_skipped_gracefully(
     ctx = _make_apply_ctx(tmp_path, source, mode=SafetyMode.LIVE, apply=True)
     result = organizer.run(ctx)
 
-    assert result.ok  # the bad item does not fail the run (per-item skip)
-    assert result.metrics["relocated"] == 0.0  # escapes roots → skipped
-    assert src_file.exists()  # media left in place
+    assert result.ok
+    # _safe_name strips the path separators, so the dest stays INSIDE the root
+    # (defence in depth alongside relocate's allowed_roots guard).
     escaped = tmp_path.parent / "etc" / "Dune (2021)" / "Dune (2021).mkv"
     assert not escaped.exists()  # nothing written outside the roots
+    assert not src_file.exists()  # moved (sanitised) within the root
+    assert list((tmp_path / "Movies").rglob("*.mkv"))  # landed inside the movies root
 
 
 def test_apply_collision_is_skipped_gracefully(

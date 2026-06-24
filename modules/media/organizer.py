@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -122,7 +123,9 @@ class Suggestion:
     episode: int | None
     confidence: float
     target: str | None
+    episode_title: str | None = None
     tmdb_id: int | None = None
+    tvdb_id: int | None = None
     video_format: str | None = None
     video_codec: str | None = None
 
@@ -206,6 +209,17 @@ def _clamp_confidence(value: object) -> float:
     return float(min(100, max(0, value)))
 
 
+def _deaccent(text: str) -> str:
+    """Strip accents/diacritics (á->a, ñ->n) so filenames stay ASCII-clean."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+def _safe_name(text: str) -> str:
+    """Deaccented, path-separator-free name fragment, trimmed."""
+    return _deaccent(text).replace("/", "-").replace("\\", "-").strip(" .-_")
+
+
 def _clean_token(value: object) -> str | None:
     """A safe, non-empty filename token (no path separators), else None."""
     if not isinstance(value, str):
@@ -220,10 +234,6 @@ def _quality_suffix(video_format: str | None, video_codec: str | None) -> str:
     return f" ({'-'.join(parts)})" if parts else ""
 
 
-def _id_suffix(tmdb_id: int | None) -> str:
-    return f" (tmdbid-{tmdb_id})" if tmdb_id else ""
-
-
 def suggested_target(
     kind: str,
     title: str,
@@ -234,29 +244,35 @@ def suggested_target(
     movies_root: str,
     series_root: str,
     *,
+    episode_title: str | None = None,
     tmdb_id: int | None = None,
+    tvdb_id: int | None = None,
     video_format: str | None = None,
     video_codec: str | None = None,
 ) -> str | None:
     """Build the canonical Radarr/Sonarr-style destination, or None when we lack
-    the essentials. Missing quality/id tags are dropped cleanly (no ``None``).
+    the essentials. Names are ASCII (no accents/ñ); missing quality/id/episode
+    tags are dropped cleanly (no ``None`` / empty parens).
 
     Movie : <movies_root>/{n} ({y})/{n} ({y}) ({vf}-{vc}) (tmdbid-{id}){ext}
     Series: <series_root>/{n} ({y})/Season {ss}/
-                {n} ({y}) - S{ss}E{ee} ({vf}-{vc}) (tmdbid-{id}){ext}
+                {n} ({y}) - S{ss}E{ee} - {episode} ({vf}-{vc}) (tvdbid-{id}){ext}
     """
+    title = _safe_name(title)
     if not title:
         return None
     quality = _quality_suffix(video_format, video_codec)
-    ids = _id_suffix(tmdb_id)
     if kind == "movie":
         base = f"{title} ({year})" if year else title
-        fname = f"{base}{quality}{ids}{ext}"
-        return str(Path(movies_root) / base / fname)
+        ids = f" (tmdbid-{tmdb_id})" if tmdb_id else ""
+        return str(Path(movies_root) / base / f"{base}{quality}{ids}{ext}")
     if kind == "series" and season is not None and episode is not None:
         base = f"{title} ({year})" if year else title
         tag = f"S{season:02d}E{episode:02d}"
-        fname = f"{base} - {tag}{quality}{ids}{ext}"
+        et = _safe_name(episode_title) if episode_title else ""
+        et_part = f" - {et}" if et else ""
+        ids = f" (tvdbid-{tvdb_id})" if tvdb_id else ""
+        fname = f"{base} - {tag}{et_part}{quality}{ids}{ext}"
         return str(Path(series_root) / base / f"Season {season:02d}" / fname)
     return None
 
@@ -270,12 +286,15 @@ def normalize_suggestion(
     kind_raw = raw.get("type")
     kind = str(kind_raw) if kind_raw in ("movie", "series", "unknown") else "unknown"
     title_raw = raw.get("title")
-    title = title_raw.strip() if isinstance(title_raw, str) else ""
+    title = _deaccent(title_raw.strip()) if isinstance(title_raw, str) else ""
     year = _opt_int(raw.get("year"))
     season = _opt_int(raw.get("season"))
     episode = _opt_int(raw.get("episode"))
     confidence = _clamp_confidence(raw.get("confidence"))
+    ep_title_raw = raw.get("episode_title")
+    episode_title = _deaccent(ep_title_raw.strip()) if isinstance(ep_title_raw, str) else None
     tmdb_id = _opt_int(raw.get("tmdb_id"))
+    tvdb_id = _opt_int(raw.get("tvdb_id"))
     video_format = _clean_token(raw.get("video_format"))
     video_codec = _clean_token(raw.get("video_codec"))
     ext = Path(filename).suffix
@@ -288,7 +307,9 @@ def normalize_suggestion(
         ext,
         movies_root,
         series_root,
+        episode_title=episode_title,
         tmdb_id=tmdb_id,
+        tvdb_id=tvdb_id,
         video_format=video_format,
         video_codec=video_codec,
     )
@@ -301,7 +322,9 @@ def normalize_suggestion(
         episode,
         confidence,
         target,
+        episode_title=episode_title or None,
         tmdb_id=tmdb_id,
+        tvdb_id=tvdb_id,
         video_format=video_format,
         video_codec=video_codec,
     )
@@ -353,6 +376,11 @@ def parse_media_filename(rel_path: str) -> dict[str, object] | None:
             title = _clean_title(_YEAR_RE.sub("", parts[0]))
         if not title:
             return None
+        # Episode title: text after SxxEyy, before the [..]/(..) tags, minus a
+        # leading absolute-episode number (e.g. " - 492 - Title").
+        after = re.split(r"[\[(]", stem[se.end() :], maxsplit=1)[0]
+        after = re.sub(r"^[\s\-_.]*(?:\d{1,4}[\s\-_.]+)?", "", after)
+        episode_title = _clean_title(after) or None
         return {
             "filename": rel_path,
             "type": "series",
@@ -360,13 +388,21 @@ def parse_media_filename(rel_path: str) -> dict[str, object] | None:
             "year": year,
             "season": season,
             "episode": episode,
+            "episode_title": episode_title,
             "video_format": vf,
             "video_codec": vc,
-            "tmdb_id": None,
+            "tvdb_id": None,
             "confidence": 95,
         }
-    if year:
-        title = _clean_title(stem[: year_m.start()]) if year_m else ""
+    if year and year_m:
+        # If there is descriptive text AFTER the year (e.g. "- EP. 01 - ...",
+        # "- Documentary", "- Part 4"), the simple "title before year" would
+        # collapse distinct files onto the same name (collisions). Defer those
+        # to the AI, which can disambiguate them properly.
+        tail = re.split(r"[\[(]", stem[year_m.end() :], maxsplit=1)[0]
+        if re.search(r"[A-Za-z0-9]", tail):
+            return None
+        title = _clean_title(stem[: year_m.start()])
         if not title and len(parts) >= 2:
             title = _clean_title(_YEAR_RE.sub("", parts[-2]))
         if not title:

@@ -46,8 +46,11 @@ _PROMPT_HEADER = (
     '  "year"       : integer release year, or null if unknown\n'
     '  "season"     : integer season number for series, else null\n'
     '  "episode"    : integer episode number for series, else null\n'
-    '  "tmdb_id"    : the TMDB id (integer) if you are confident, else null. Do '
-    "NOT guess random numbers; null is better than a wrong id\n"
+    '  "episode_title": for a series, the episode name if present in the input '
+    "(or known), else null\n"
+    '  "tmdb_id"    : for a MOVIE, the TMDB id (integer) if confident, else null\n'
+    '  "tvdb_id"    : for a SERIES, the TVDB id (integer) if confident, else '
+    "null. Do NOT guess random numbers; null is better than a wrong id\n"
     '  "video_format": source+resolution parsed from the name tags, e.g. '
     '"Bluray-1080p" / "WEBDL-1080p" / "HDTV-720p" / "DVD", else null\n'
     '  "video_codec": video codec parsed from the name tags, e.g. "x265" / '
