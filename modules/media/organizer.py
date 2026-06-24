@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Protocol
 
 from core import secrets
 from core.errors import (
@@ -44,6 +46,16 @@ from core.errors import (
 from core.registry import register
 from core.types import FailureRecord, ModuleResult, RunContext
 from integrations.gemini import GeminiClient
+from integrations.ollama import OllamaClient
+
+
+class _Identifier(Protocol):
+    """Common surface of the AI backends (Gemini / Ollama) the cascade uses."""
+
+    def identify(
+        self, paths: Sequence[str], *, errors: list[IntegrationError] | None = None
+    ) -> list[dict[str, object]]: ...
+
 
 _JUNK_SUFFIXES = {".nfo", ".txt", ".url"}
 _MEDIA_SUFFIXES = {
@@ -256,7 +268,7 @@ def normalize_suggestion(
     name = raw.get("filename")
     filename = name if isinstance(name, str) and name else fallback_name
     kind_raw = raw.get("type")
-    kind = kind_raw if kind_raw in ("movie", "series", "unknown") else "unknown"
+    kind = str(kind_raw) if kind_raw in ("movie", "series", "unknown") else "unknown"
     title_raw = raw.get("title")
     title = title_raw.strip() if isinstance(title_raw, str) else ""
     year = _opt_int(raw.get("year"))
@@ -411,11 +423,44 @@ def _apply_enabled(ctx: RunContext) -> bool:
 
 
 def _ai_fallback_enabled(ctx: RunContext) -> bool:
-    """Whether to call Gemini for files the local parser could not resolve.
+    """Master switch for using ANY AI backend on files the parser can't resolve.
     Default True; set integrations.gemini.ai_fallback=false to stay 100% local
-    (no quota use)."""
+    (parser only, zero AI calls)."""
     value = ctx.config.integrations.get("gemini", {}).get("ai_fallback", True)
     return value if isinstance(value, bool) else True
+
+
+def _ai_providers(ctx: RunContext) -> list[str]:
+    """Ordered AI backends to try for unresolved files. Default ['gemini'] for
+    back-compat; recommended ['ollama', 'gemini'] = local 4060 first (free,
+    unlimited), Gemini only as a last resort (quota-limited)."""
+    value = ctx.config.integrations.get("ai", {}).get("providers", ["gemini"])
+    if isinstance(value, list):
+        return [p for p in value if isinstance(p, str)]
+    return ["gemini"]
+
+
+def _ollama(ctx: RunContext) -> OllamaClient:
+    settings = ctx.config.integrations.get("ollama", {})
+    base = settings.get("base_url", "http://localhost:11434")
+    model = settings.get("model", "qwen3:8b")
+    if not isinstance(base, str) or not isinstance(model, str):
+        raise ConfigError("integrations.ollama needs string 'base_url' and 'model'")
+    batch = settings.get("batch_size", 50)
+    if isinstance(batch, bool) or not isinstance(batch, int):
+        raise ConfigError("integrations.ollama.batch_size must be an integer")
+    delay = settings.get("request_delay", 0)
+    if isinstance(delay, bool) or not isinstance(delay, int | float):
+        raise ConfigError("integrations.ollama.request_delay must be a number")
+    return OllamaClient(base_url=base, model=model, batch_size=batch, request_delay=float(delay))
+
+
+def _build_ai_client(ctx: RunContext, name: str) -> _Identifier:
+    if name == "ollama":
+        return _ollama(ctx)
+    if name == "gemini":
+        return _gemini(ctx)
+    raise ConfigError(f"unknown AI provider: {name!r} (use 'ollama' or 'gemini')")
 
 
 def _cleanup(ctx: RunContext, junk: list[Path], empties: list[Path]) -> int:
@@ -552,20 +597,35 @@ def run(ctx: RunContext) -> ModuleResult:
             unresolved.append(rel)
 
     if unresolved and _ai_fallback_enabled(ctx):
-        try:
-            errors: list[IntegrationError] = []
-            raw.extend(_gemini(ctx).identify(unresolved, errors=errors))
-            for exc in errors:
-                result.add_failure(FailureRecord(category="integration", message=str(exc)))
-        except (ConfigError, SecretError) as exc:
-            result.add_failure(FailureRecord(category="config", message=str(exc)))
-        except IntegrationError as exc:
-            result.add_failure(FailureRecord(category="integration", message=str(exc)))
+        for name in _ai_providers(ctx):
+            if not unresolved:
+                break
+            try:
+                client = _build_ai_client(ctx, name)
+                errors: list[IntegrationError] = []
+                got = client.identify(unresolved, errors=errors)
+            except (ConfigError, SecretError) as exc:
+                result.add_failure(FailureRecord(category="config", message=f"{name}: {exc}"))
+                continue
+            except IntegrationError as exc:
+                result.add_failure(FailureRecord(category="integration", message=f"{name}: {exc}"))
+                continue
+            for batch_exc in errors:
+                result.add_failure(
+                    FailureRecord(category="integration", message=f"{name}: {batch_exc}")
+                )
+            raw.extend(got)
+            resolved = {e.get("filename") for e in got if isinstance(e.get("filename"), str)}
+            unresolved = [r for r in unresolved if r not in resolved]
+
+    # Anything still unresolved -> surface as 'unknown' so it lands in needs_review.
+    for rel in unresolved:
+        raw.append({"filename": rel, "type": "unknown", "confidence": 0})
 
     suggestions: list[Suggestion] = []
     for entry in raw:
-        name = entry.get("filename")
-        fallback = name if isinstance(name, str) and name else ""
+        echoed = entry.get("filename")
+        fallback = echoed if isinstance(echoed, str) and echoed else ""
         suggestions.append(normalize_suggestion(entry, fallback, movies_root, series_root))
 
     threshold = _threshold(ctx)

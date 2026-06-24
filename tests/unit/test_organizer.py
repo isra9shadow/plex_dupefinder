@@ -187,6 +187,54 @@ def test_parseable_file_does_not_call_ai(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert plan["confident"][0]["title"] == "Show"
 
 
+def test_ai_cascade_ollama_first_then_gemini(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "manuales"
+    source.mkdir()
+    # Two ambiguous files (no parens-year / no SxxEyy) -> parser can't resolve.
+    (source / "weird_one.mkv").write_bytes(b"a")
+    (source / "weird_two.mkv").write_bytes(b"b")
+    seen: dict[str, list[str]] = {}
+
+    def ollama_identify(
+        self: object, names: list[str], errors: object = None
+    ) -> list[dict[str, object]]:
+        seen["ollama"] = list(names)
+        # Ollama resolves only the first one; the other falls through to Gemini.
+        return [{"filename": "weird_one.mkv", "type": "movie", "title": "One", "confidence": 95}]
+
+    def gemini_identify(
+        self: object, names: list[str], errors: object = None
+    ) -> list[dict[str, object]]:
+        seen["gemini"] = list(names)
+        return [{"filename": "weird_two.mkv", "type": "movie", "title": "Two", "confidence": 92}]
+
+    monkeypatch.setattr(organizer.OllamaClient, "identify", ollama_identify)
+    monkeypatch.setattr(organizer.GeminiClient, "identify", gemini_identify)
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = make_context(
+        tmp_path,
+        paths={"organizer_source": str(source), "movies_root": "/M", "series_root": "/S"},
+        integrations={
+            "ai": {"providers": ["ollama", "gemini"]},
+            "ollama": {"base_url": "http://ollama:11434", "model": "qwen3:8b"},
+            "gemini": {"api_key_ref": "GEMINI_API_KEY"},
+        },
+    )
+    result = organizer.run(ctx)
+
+    assert result.ok
+    assert sorted(seen["ollama"]) == ["weird_one.mkv", "weird_two.mkv"]  # Ollama tried both
+    assert seen["gemini"] == ["weird_two.mkv"]  # Gemini only got the leftover
+    plan = json.loads(
+        (tmp_path / "reports" / "organizer" / "plan.json").read_text(encoding="utf-8")
+    )
+    got_titles = {s["title"] for s in plan["confident"]}
+    assert got_titles == {"One", "Two"}  # both resolved across the cascade
+
+
 # --- run integration -----------------------------------------------------------
 
 
