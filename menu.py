@@ -2,10 +2,10 @@
 """Interactive terminal menu for plex_dupefinder + the izumi organizer.
 
 A thin, dependency-free launcher so the common operations are point-and-pick
-instead of long, error-prone commands. It ONLY launches the existing
-entrypoints (and, for a "simulate" choice, temporarily flips a config flag and
-restores it afterwards) — it never moves or deletes anything itself, so every
-safety guarantee of the underlying tools is preserved.
+instead of long, error-prone commands. On start it best-effort updates itself
+from git (showing the running version + date), it can toggle the main config
+options from a submenu, and it ONLY launches the existing entrypoints (real
+actions confirm first) — it never moves or deletes anything itself.
 
 Run it on the host:  python3 menu.py
 """
@@ -22,6 +22,36 @@ ROOT = os.path.dirname(os.path.realpath(__file__))
 LEGACY_CFG = os.path.join(ROOT, "config.json")
 IZUMI_CFG = os.path.join(ROOT, "config", "config.json")
 DOCKER_IMAGE = "python:3.12-slim"
+_W = 60  # menu width
+
+
+# --- colours (ANSI, only when attached to a TTY) -------------------------------
+
+_TTY = sys.stdout.isatty()
+
+
+def _c(code, text):
+    return f"\033[{code}m{text}\033[0m" if _TTY else text
+
+
+def _title(text):
+    return _c("96;1", text)
+
+
+def _dim(text):
+    return _c("90", text)
+
+
+def _ok(text):
+    return _c("92", text)
+
+
+def _warn(text):
+    return _c("93", text)
+
+
+def _danger(text):
+    return _c("91", text)
 
 
 # --- config helpers ------------------------------------------------------------
@@ -33,8 +63,40 @@ def _load(path):
 
 
 def _save(path, data):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, sort_keys=True)
+
+
+def _cfg_get(path, *keys, default=None):
+    """Nested config read; returns ``default`` on any miss or unreadable file."""
+    try:
+        node = _load(path)
+    except (OSError, ValueError):
+        return default
+    for key in keys:
+        if not isinstance(node, dict) or key not in node:
+            return default
+        node = node[key]
+    return node
+
+
+def _cfg_set(path, value, *keys):
+    """Nested config write (creates intermediate objects), persisted."""
+    try:
+        data = _load(path)
+    except (OSError, ValueError):
+        data = {}
+    node = data
+    for key in keys[:-1]:
+        sub = node.get(key)
+        if not isinstance(sub, dict):
+            sub = {}
+            node[key] = sub
+        node = sub
+    node[keys[-1]] = value
+    _save(path, data)
+    return value
 
 
 def set_legacy_dry_run(data, dry):
@@ -61,6 +123,53 @@ def temp_config(path, mutate):
         yield
     finally:
         _save(path, original)
+
+
+# --- git self-update + version -------------------------------------------------
+
+
+def _git(*args):
+    """Run a git command in the repo; return CompletedProcess or None on failure."""
+    try:
+        return subprocess.run(
+            ["git", "-C", ROOT, *args],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def parse_version(line):
+    """Parse a ``<sha>|<date>`` git line into ``(sha, date)`` (pure, testable)."""
+    sha, _, date = line.partition("|")
+    return (sha.strip() or "?", date.strip() or "?")
+
+
+def current_version():
+    """``(short_sha, date)`` of HEAD, or ``('?', '?')``."""
+    out = _git("log", "-1", "--format=%h|%cd", "--date=short")
+    if out is not None and out.returncode == 0 and "|" in out.stdout:
+        return parse_version(out.stdout.strip())
+    return ("?", "?")
+
+
+def git_update():
+    """Best-effort fast-forward to origin/master. Never blocks the menu.
+
+    Returns a short status string: 'updated <a>-><b>' | 'up-to-date' | 'offline'.
+    """
+    _git("config", "--global", "--add", "safe.directory", ROOT)  # unraid ownership
+    fetched = _git("fetch", "--quiet", "origin", "master")
+    if fetched is None or fetched.returncode != 0:
+        return "offline"
+    before = current_version()[0]
+    pulled = _git("pull", "--ff-only")
+    if pulled is None or pulled.returncode != 0:
+        return "offline"
+    after = current_version()[0]
+    return f"updated {before}->{after}" if before != after else "up-to-date"
 
 
 # --- command builders (pure, testable) -----------------------------------------
@@ -110,27 +219,22 @@ def health_command():
 
 
 def _izumi_reports_dir():
-    try:
-        reporting = _load(IZUMI_CFG).get("reporting", {})
-        if isinstance(reporting, dict) and isinstance(reporting.get("dir"), str):
-            return reporting["dir"]
-    except (OSError, ValueError):
-        pass
-    return "/mnt/cache/appdata/izumi/reports"
+    reporting = _cfg_get(IZUMI_CFG, "reporting", "dir")
+    return reporting if isinstance(reporting, str) else "/mnt/cache/appdata/izumi/reports"
 
 
 # --- actions -------------------------------------------------------------------
 
 
 def _run(argv):
-    print("\n$ " + " ".join(argv) + "\n")
+    print("\n" + _dim("$ " + " ".join(argv)) + "\n")
     return subprocess.call(argv)
 
 
 def confirm(prompt):
     """Ask for explicit confirmation before a real (acting) operation."""
     try:
-        return input(prompt + " [s/N]: ").strip().lower() in ("s", "si", "sí", "y", "yes")
+        return input(_warn(prompt + " [s/N]: ")).strip().lower() in ("s", "si", "sí", "y", "yes")
     except (EOFError, KeyboardInterrupt):
         print()
         return False
@@ -188,11 +292,91 @@ def action_show_organizer_plan():
         with open(plan, encoding="utf-8") as fh:
             print("\n" + fh.read())
     else:
-        print(f"\n(no hay plan todavía en {plan})")
+        print(_dim(f"\n(no hay plan todavía en {plan})"))
 
 
 def action_diagnose_paths():
     _run(dupefinder_diagnose_command())
+
+
+# --- configuration submenu -----------------------------------------------------
+
+
+def _onoff(value):
+    return _ok("ON") if value else _dim("off")
+
+
+def _config_lines():
+    """Human-readable current state of the main config options."""
+    dry = bool(_cfg_get(LEGACY_CFG, "DRY_RUN", default=True))
+    mode = _cfg_get(IZUMI_CFG, "safety", "mode", default="dry_run")
+    apply_moves = bool(_cfg_get(IZUMI_CFG, "integrations", "gemini", "apply", default=False))
+    fallback = bool(_cfg_get(IZUMI_CFG, "integrations", "gemini", "ai_fallback", default=True))
+    providers = _cfg_get(IZUMI_CFG, "integrations", "ai", "providers", default=["gemini"])
+    thr = _cfg_get(IZUMI_CFG, "integrations", "gemini", "confidence_threshold", default=90)
+    return [
+        f"  1) Dupefinder DRY_RUN ............ {_onoff(dry)}  "
+        + _dim("(ON=simula, off=borra real)"),
+        f"  2) Organizer modo LIVE .......... {_onoff(mode == 'live')}",
+        f"  3) Organizer apply (mover) ...... {_onoff(apply_moves)}",
+        f"  4) IA fallback .................. {_onoff(fallback)}",
+        f"  5) Proveedores IA ............... {_ok(','.join(providers) or 'ninguno')}",
+        f"  6) Umbral de confianza .......... {_ok(str(thr))}%",
+        "  0) Volver",
+    ]
+
+
+def _cycle_providers(current):
+    """Cycle the AI provider order through the sensible presets."""
+    presets = [["ollama", "gemini"], ["ollama"], ["gemini"], []]
+    try:
+        idx = presets.index(list(current))
+    except ValueError:
+        idx = -1
+    return presets[(idx + 1) % len(presets)]
+
+
+def action_config():
+    while True:
+        print("\n" + _title("Configuración") + "\n" + _dim("-" * _W))
+        print("\n".join(_config_lines()))
+        print(_dim("-" * _W))
+        try:
+            choice = input("Opción a cambiar: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if choice == "0":
+            return
+        if choice == "1":
+            new = not bool(_cfg_get(LEGACY_CFG, "DRY_RUN", default=True))
+            _cfg_set(LEGACY_CFG, new, "DRY_RUN")
+        elif choice == "2":
+            live = _cfg_get(IZUMI_CFG, "safety", "mode", default="dry_run") == "live"
+            _cfg_set(IZUMI_CFG, "dry_run" if live else "live", "safety", "mode")
+        elif choice == "3":
+            new = not bool(_cfg_get(IZUMI_CFG, "integrations", "gemini", "apply", default=False))
+            _cfg_set(IZUMI_CFG, new, "integrations", "gemini", "apply")
+        elif choice == "4":
+            new = not bool(
+                _cfg_get(IZUMI_CFG, "integrations", "gemini", "ai_fallback", default=True)
+            )
+            _cfg_set(IZUMI_CFG, new, "integrations", "gemini", "ai_fallback")
+        elif choice == "5":
+            cur = _cfg_get(IZUMI_CFG, "integrations", "ai", "providers", default=["gemini"])
+            _cfg_set(IZUMI_CFG, _cycle_providers(cur), "integrations", "ai", "providers")
+        elif choice == "6":
+            raw = input("Nuevo umbral 0-100 (enter=cancela): ").strip()
+            if raw.isdigit():
+                _cfg_set(
+                    IZUMI_CFG,
+                    max(0, min(100, int(raw))),
+                    "integrations",
+                    "gemini",
+                    "confidence_threshold",
+                )
+        else:
+            print(_danger("Opción no válida."))
 
 
 MENU = [
@@ -203,23 +387,51 @@ MENU = [
     ("Organizar — Solo limpiar basura (no mueve ficheros)", action_organizer_cleanup_only),
     ("Mantenimiento completo (orden recomendado: duplicados → organizar)", action_full_maintenance),
     ("Ver último plan del organizador", action_show_organizer_plan),
+    ("Configuración (activar/desactivar opciones)", action_config),
     ("Healthcheck de la plataforma", action_health),
     ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),
 ]
 
 
-def render_menu():
-    lines = ["", "=" * 56, "  plex_dupefinder · menú", "=" * 56]
-    for i, (label, _) in enumerate(MENU, start=1):
-        lines.append(f"  {i}) {label}")
-    lines.append("  0) Salir")
-    lines.append("-" * 56)
+def render_menu(version_line=""):
+    bar = "═" * _W
+    lines = [
+        "",
+        _title("╔" + bar + "╗"),
+        _title("║") + "  plex_dupefinder · menú",
+        _title("╚" + bar + "╝"),
+    ]
+    if version_line:
+        lines.append("  " + _dim(version_line))
+    lines.append("")
+    for i, (label, _action) in enumerate(MENU, start=1):
+        lines.append(f"  {_c('96', f'{i:>2}')}) {label}")
+    lines.append(f"  {_c('96', ' 0')}) Salir")
+    lines.append(_dim("─" * (_W + 2)))
     return "\n".join(lines)
 
 
+def _startup_update():
+    """Self-update once (guarded against an exec loop), then re-exec if changed."""
+    if os.environ.get("MENU_NO_UPDATE") == "1" or os.environ.get("_MENU_REEXEC") == "1":
+        return
+    status = git_update()
+    print(_dim(f"[git] {status}"))
+    if status.startswith("updated"):
+        os.environ["_MENU_REEXEC"] = "1"
+        print(_dim("recargando menú con la versión nueva..."))
+        try:
+            os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
+        except OSError:
+            pass  # fall through and run the current version
+
+
 def main(argv=None):
+    _startup_update()
+    sha, date = current_version()
+    version_line = f"versión {sha} ({date})"
     while True:
-        print(render_menu())
+        print(render_menu(version_line))
         try:
             choice = input("Elige una opción: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -230,7 +442,7 @@ def main(argv=None):
         if choice.isdigit() and 1 <= int(choice) <= len(MENU):
             MENU[int(choice) - 1][1]()
         else:
-            print("Opción no válida.")
+            print(_danger("Opción no válida."))
 
 
 if __name__ == "__main__":

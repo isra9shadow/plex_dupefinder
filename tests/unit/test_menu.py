@@ -35,6 +35,33 @@ def test_organizer_command_mounts_repo_media_cache() -> None:
     assert "/mnt/cache:/mnt/cache" in joined
 
 
+def test_parse_version_splits_sha_and_date() -> None:
+    assert menu.parse_version("abc1234|2026-06-24") == ("abc1234", "2026-06-24")
+    assert menu.parse_version("") == ("?", "?")
+
+
+def test_cycle_providers_rotates_presets() -> None:
+    assert menu._cycle_providers(["ollama", "gemini"]) == ["ollama"]
+    assert menu._cycle_providers(["ollama"]) == ["gemini"]
+    assert menu._cycle_providers(["gemini"]) == []
+    assert menu._cycle_providers([]) == ["ollama", "gemini"]
+    assert menu._cycle_providers(["weird"]) == ["ollama", "gemini"]  # unknown -> first
+
+
+def test_cfg_get_set_roundtrip(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}", encoding="utf-8")
+    menu._cfg_set(str(cfg), "live", "safety", "mode")
+    menu._cfg_set(str(cfg), True, "integrations", "gemini", "apply")
+    assert menu._cfg_get(str(cfg), "safety", "mode") == "live"
+    assert menu._cfg_get(str(cfg), "integrations", "gemini", "apply") is True
+    assert menu._cfg_get(str(cfg), "nope", default="d") == "d"
+
+
+def test_cfg_get_missing_file_returns_default(tmp_path: Path) -> None:
+    assert menu._cfg_get(str(tmp_path / "absent.json"), "a", default=7) == 7
+
+
 def test_health_command_runs_health_in_container() -> None:
     argv = menu.health_command()
     assert argv[0] == "docker"
