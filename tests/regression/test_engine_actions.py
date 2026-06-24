@@ -333,6 +333,66 @@ def test_trigger_sonarr_rescan_enabled(cfg, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# targeted *arr rescan (RescanSeries/RescanMovie with an id)
+# --------------------------------------------------------------------------- #
+
+
+def _record_posts(monkeypatch):
+    posted = []
+
+    def fake(tool, url, key, cmd, extra=None):
+        posted.append((cmd, extra))
+        return {"attempted": True, "success": True}
+
+    monkeypatch.setattr(pd, "_arr_post_command", fake)
+    return posted
+
+
+def test_match_arr_path_ids_equal_and_nested():
+    items = [{"id": 7, "path": "/tv/Naruto Shippuden"}, {"id": 9, "path": "/tv/Other"}]
+    assert pd._match_arr_path_ids(items, {"/tv/Naruto Shippuden"}) == {7}
+    assert pd._match_arr_path_ids(items, {"/tv/Naruto Shippuden/Season 15"}) == {7}
+    assert pd._match_arr_path_ids(items, {"/tv/Nope"}) == set()
+
+
+def test_sonarr_rescan_targets_matched_series(cfg, monkeypatch):
+    cfg["SONARR_RESCAN_AFTER"] = True
+    cfg["SONARR_URL"] = "http://sonarr"
+    cfg["SONARR_API_KEY"] = "SK"
+    monkeypatch.setattr(pd, "_sonarr_rescan_folders", {"/tv/Naruto Shippuden"})
+    monkeypatch.setattr(
+        pd, "_arr_get_json", lambda *a: [{"id": 42, "path": "/tv/Naruto Shippuden"}]
+    )
+    posted = _record_posts(monkeypatch)
+    result = pd.trigger_sonarr_rescan()
+    assert result["scope"] == "targeted"
+    assert result["ids"] == [42]
+    assert posted == [("RescanSeries", {"seriesId": 42})]
+
+
+def test_sonarr_rescan_falls_back_to_full_on_no_match(cfg, monkeypatch):
+    cfg["SONARR_RESCAN_AFTER"] = True
+    cfg["SONARR_URL"] = "http://sonarr"
+    cfg["SONARR_API_KEY"] = "SK"
+    monkeypatch.setattr(pd, "_sonarr_rescan_folders", {"/tv/Unmatched"})
+    monkeypatch.setattr(pd, "_arr_get_json", lambda *a: [{"id": 1, "path": "/tv/Other"}])
+    posted = _record_posts(monkeypatch)
+    result = pd.trigger_sonarr_rescan()
+    assert posted == [("RescanSeries", None)]  # full rescan, no id
+    assert result.get("fallback", "").startswith("full")
+
+
+def test_radarr_rescan_full_when_no_folders(cfg, monkeypatch):
+    cfg["RADARR_RESCAN_AFTER"] = True
+    cfg["RADARR_URL"] = "http://radarr"
+    cfg["RADARR_API_KEY"] = "RK"
+    monkeypatch.setattr(pd, "_radarr_rescan_folders", set())
+    posted = _record_posts(monkeypatch)
+    pd.trigger_radarr_rescan()
+    assert posted == [("RescanMovie", None)]  # no targeting context -> full
+
+
+# --------------------------------------------------------------------------- #
 # remove_plex_metadata  (requests.delete monkeypatched to a fake)
 # --------------------------------------------------------------------------- #
 

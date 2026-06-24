@@ -105,6 +105,13 @@ run_started_at = datetime.now(timezone.utc).isoformat()
 # instead of rescanning whole (potentially huge) libraries. See
 # PLEX_REFRESH_SCOPE and refresh_plex_targets().
 _plex_refresh_targets = set()
+
+# Affected show/movie folders collected during PASS 2 so the post-run *arr rescan
+# can target ONLY the touched series/movies (RescanSeries/RescanMovie with an id)
+# instead of rescanning the whole *arr library. Falls back to a full rescan when
+# empty or unmatchable. See trigger_sonarr_rescan / trigger_radarr_rescan.
+_sonarr_rescan_folders = set()
+_radarr_rescan_folders = set()
 run_report = {
     'run_id': run_id,
     'started_at': run_started_at,
@@ -1701,13 +1708,16 @@ def refresh_plex_libraries(libraries):
     return result
 
 
-def _arr_post_command(tool, url, api_key, command_name):
+def _arr_post_command(tool, url, api_key, command_name, extra=None):
     result = {'attempted': True, 'success': False, 'detail': None, 'command': command_name}
+    body = {'name': command_name}
+    if extra:
+        body.update(extra)
     try:
         response = requests.post(
             "%s/api/v3/command" % url.rstrip('/'),
             headers={'X-Api-Key': api_key, 'Content-Type': 'application/json'},
-            json={'name': command_name},
+            json=body,
             timeout=REQUESTS_TIMEOUT,
         )
         if response.status_code in (200, 201):
@@ -1729,16 +1739,78 @@ def _arr_post_command(tool, url, api_key, command_name):
     return result
 
 
+def _arr_get_json(tool, url, api_key, endpoint):
+    """GET a v3 list endpoint (e.g. 'series'/'movie') and return parsed JSON."""
+    response = requests.get(
+        "%s/api/v3/%s" % (url.rstrip('/'), endpoint),
+        headers={'X-Api-Key': api_key},
+        timeout=REQUESTS_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _match_arr_path_ids(items, folders):
+    """Return the set of *arr item ids whose ``path`` corresponds to one of the
+    affected ``folders``. Matches when the paths are equal or one contains the
+    other (handles Plex's show-root locations vs the *arr series/movie folder).
+    """
+    norm = {f.rstrip('/') for f in folders if f}
+    ids = set()
+    for item in items or []:
+        path = (item.get('path') or '').rstrip('/')
+        if not path:
+            continue
+        for f in norm:
+            if path == f or f.startswith(path + '/') or path.startswith(f + '/'):
+                if item.get('id') is not None:
+                    ids.add(item['id'])
+                break
+    return ids
+
+
+def _arr_rescan(tool, url, api_key, list_endpoint, command, id_field, folders):
+    """Targeted *arr rescan: rescan only the series/movies matching the affected
+    folders. Falls back to a full-library rescan when there is no targeting
+    context (nothing removed) or no match could be resolved — we never silently
+    skip reconciliation."""
+    folders = {f for f in folders if f}
+    if not folders:
+        return _arr_post_command(tool, url, api_key, command)
+    try:
+        items = _arr_get_json(tool, url, api_key, list_endpoint)
+    except Exception as e:
+        log.warning("%s %s list fetch failed (%s) — full rescan fallback", tool, list_endpoint, e)
+        res = _arr_post_command(tool, url, api_key, command)
+        res['fallback'] = 'full (list fetch failed)'
+        return res
+    ids = _match_arr_path_ids(items, folders)
+    if not ids:
+        res = _arr_post_command(tool, url, api_key, command)
+        res['fallback'] = 'full (no path match)'
+        return res
+    result = {'attempted': True, 'scope': 'targeted', 'command': command,
+              'ids': sorted(ids), 'results': [], 'errors': []}
+    for i in sorted(ids):
+        r = _arr_post_command(tool, url, api_key, command, extra={id_field: i})
+        result['results'].append(r)
+        if not r.get('success'):
+            result['errors'].append({id_field: i, 'detail': r.get('detail')})
+    return result
+
+
 def trigger_radarr_rescan():
     if not cfg.get('RADARR_RESCAN_AFTER'):
         return {'attempted': False}
-    return _arr_post_command('Radarr', cfg['RADARR_URL'], cfg['RADARR_API_KEY'], 'RescanMovie')
+    return _arr_rescan('Radarr', cfg['RADARR_URL'], cfg['RADARR_API_KEY'],
+                       'movie', 'RescanMovie', 'movieId', _radarr_rescan_folders)
 
 
 def trigger_sonarr_rescan():
     if not cfg.get('SONARR_RESCAN_AFTER'):
         return {'attempted': False}
-    return _arr_post_command('Sonarr', cfg['SONARR_URL'], cfg['SONARR_API_KEY'], 'RescanSeries')
+    return _arr_rescan('Sonarr', cfg['SONARR_URL'], cfg['SONARR_API_KEY'],
+                       'series', 'RescanSeries', 'seriesId', _sonarr_rescan_folders)
 
 
 ############################################################
@@ -2961,9 +3033,15 @@ def _revalidate_and_act_group(group):
         # partial-scan only here, not the whole library. Only when we actually
         # moved/deleted something (acting run).
         if acting and counters['items_removed'] > 0:
-            _plex_refresh_targets.update(
-                plan_item_refresh_targets(fresh_item, library_name)
-            )
+            targets = plan_item_refresh_targets(fresh_item, library_name)
+            _plex_refresh_targets.update(targets)
+            # Reuse the same affected folders for a targeted *arr rescan, split by
+            # type: episodes -> Sonarr series, everything else -> Radarr movies.
+            folders = {folder for _, folder in targets}
+            if getattr(fresh_item, 'type', None) == 'episode':
+                _sonarr_rescan_folders.update(folders)
+            else:
+                _radarr_rescan_folders.update(folders)
         return counters
 
     except Exception as e:
