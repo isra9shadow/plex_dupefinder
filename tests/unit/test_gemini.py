@@ -138,3 +138,25 @@ def test_non_retryable_http_error_raises_immediately(code: int) -> None:
         client.identify(["x.mkv"])
     assert calls == 1  # no retry on non-transient status
     assert slept == []  # never slept
+
+
+def test_identify_skips_failed_batch_when_errors_collected() -> None:
+    responses = iter([_envelope([{"filename": "a"}]), "BADJSON", _envelope([{"filename": "c"}])])
+    client = GeminiClient("KEY", batch_size=1, poster=lambda u, b, h, t: next(responses))
+    errors: list[IntegrationError] = []
+    out = client.identify(["a", "b", "c"], errors=errors)
+    assert [r["filename"] for r in out] == ["a", "c"]  # middle batch skipped, not aborted
+    assert len(errors) == 1
+
+
+def test_identify_throttles_between_batches() -> None:
+    slept: list[float] = []
+    client = GeminiClient(
+        "KEY",
+        batch_size=1,
+        request_delay=2.0,
+        sleeper=slept.append,
+        poster=lambda u, b, h, t: _envelope([{"filename": "n"}]),
+    )
+    client.identify(["a", "b", "c"])
+    assert slept == [2.0, 2.0]  # delay before the 2nd and 3rd batch, not the first

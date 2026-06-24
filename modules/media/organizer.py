@@ -91,6 +91,13 @@ def is_media(path: Path) -> bool:
     return path.suffix.lower() in _MEDIA_SUFFIXES
 
 
+def _safe_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:  # pragma: no cover - defensive
+        return 0
+
+
 def scan(root: Path) -> tuple[list[Path], list[Path]]:
     """Return ``(junk_files, media_files)`` found anywhere under ``root``."""
     junk: list[Path] = []
@@ -185,7 +192,12 @@ def _gemini(ctx: RunContext) -> GeminiClient:
         raise ConfigError("integrations.gemini needs string 'api_key_ref' and 'model'")
     if isinstance(batch, bool) or not isinstance(batch, int):
         raise ConfigError("integrations.gemini.batch_size must be an integer")
-    return GeminiClient(secrets.require(ref), model=model, batch_size=batch)
+    delay = settings.get("request_delay", 0)
+    if isinstance(delay, bool) or not isinstance(delay, int | float):
+        raise ConfigError("integrations.gemini.request_delay must be a number")
+    return GeminiClient(
+        secrets.require(ref), model=model, batch_size=batch, request_delay=float(delay)
+    )
 
 
 def _threshold(ctx: RunContext) -> float:
@@ -314,15 +326,26 @@ def run(ctx: RunContext) -> ModuleResult:
     series_root = paths.get("series_root", "Series")
 
     junk, media = scan(source)
+    # Largest files first: organise/free the big ones sooner (space optimisation).
+    media.sort(key=_safe_size, reverse=True)
     cleaned = _cleanup(ctx, junk, empty_dirs(source))
     result.quarantined = cleaned
 
+    # Identify by RELATIVE path (folders + filename) so the model can use folder
+    # names as title hints; map results back by the echoed path, not by position
+    # (a skipped/failed batch must not misalign the rest).
+    by_rel = {p.relative_to(source).as_posix(): p for p in media}
     suggestions: list[Suggestion] = []
     if media:
         try:
-            raw = _gemini(ctx).identify([p.name for p in media])
-            for path, entry in zip(media, raw, strict=False):
-                suggestions.append(normalize_suggestion(entry, path.name, movies_root, series_root))
+            errors: list[IntegrationError] = []
+            raw = _gemini(ctx).identify(list(by_rel), errors=errors)
+            for exc in errors:
+                result.add_failure(FailureRecord(category="integration", message=str(exc)))
+            for entry in raw:
+                name = entry.get("filename")
+                fallback = name if isinstance(name, str) and name else ""
+                suggestions.append(normalize_suggestion(entry, fallback, movies_root, series_root))
         except (ConfigError, SecretError) as exc:
             result.add_failure(FailureRecord(category="config", message=str(exc)))
         except IntegrationError as exc:
@@ -334,9 +357,8 @@ def run(ctx: RunContext) -> ModuleResult:
     applied: list[dict[str, object]] = []
     try:
         if _apply_enabled(ctx):
-            by_name = {p.name: p for p in media}
             allowed_roots = [Path(movies_root), Path(series_root)]
-            applied = _apply(ctx, suggestions, threshold, by_name, allowed_roots)
+            applied = _apply(ctx, suggestions, threshold, by_rel, allowed_roots)
     except ConfigError as exc:
         result.add_failure(FailureRecord(category="config", message=str(exc)))
 

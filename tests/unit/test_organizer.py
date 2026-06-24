@@ -91,7 +91,9 @@ def test_run_cleans_junk_and_reports(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     (source / "Dune.nfo").write_text("x", encoding="utf-8")
     (source / "empty").mkdir()
 
-    def fake_identify(self: object, names: list[str]) -> list[dict[str, object]]:
+    def fake_identify(
+        self: object, names: list[str], errors: object = None
+    ) -> list[dict[str, object]]:
         return [
             {
                 "filename": "Dune.2021.mkv",
@@ -127,7 +129,7 @@ def test_run_dry_run_does_not_move(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     source = tmp_path / "manuales"
     source.mkdir()
     (source / "junk.nfo").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(organizer.GeminiClient, "identify", lambda self, names: [])
+    monkeypatch.setattr(organizer.GeminiClient, "identify", lambda self, names, errors=None: [])
     monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
 
     ctx = make_context(
@@ -144,7 +146,7 @@ def test_run_dry_run_does_not_move(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 
 def _movie_identify(title: str = "Dune", year: int = 2021, confidence: int = 97):
-    def fake(self: object, names: list[str]) -> list[dict[str, object]]:
+    def fake(self: object, names: list[str], errors: object = None) -> list[dict[str, object]]:
         return [
             {
                 "filename": "Dune.2021.mkv",
@@ -243,6 +245,67 @@ def test_apply_low_confidence_not_moved(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert src_file.exists()  # below threshold → left in place
 
 
+def test_identify_sends_relative_path_and_maps_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "manuales"
+    (source / "Breaking Bad" / "S01").mkdir(parents=True)
+    src = source / "Breaking Bad" / "S01" / "ep01.mkv"
+    src.write_bytes(b"data")
+    seen: dict[str, list[str]] = {}
+
+    def fake(self: object, names: list[str], errors: object = None) -> list[dict[str, object]]:
+        seen["names"] = list(names)
+        return [
+            {
+                "filename": names[0],  # echo the relative path back
+                "type": "series",
+                "title": "Breaking Bad",
+                "year": 2008,
+                "season": 1,
+                "episode": 1,
+                "confidence": 95,
+            }
+        ]
+
+    monkeypatch.setattr(organizer.GeminiClient, "identify", fake)
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = _make_apply_ctx(tmp_path, source, mode=SafetyMode.LIVE, apply=True)
+    result = organizer.run(ctx)
+
+    # The model receives the FULL relative path (folder hint), not just the file.
+    assert seen["names"] == ["Breaking Bad/S01/ep01.mkv"]
+    assert result.metrics["relocated"] == 1.0
+    dest = tmp_path / "Series" / "Breaking Bad (2008)" / "Season 01" / "Breaking Bad - S01E01.mkv"
+    assert dest.exists()
+    assert not src.exists()
+
+
+def test_largest_files_identified_first(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    source = tmp_path / "manuales"
+    source.mkdir()
+    (source / "small.mkv").write_bytes(b"x" * 10)
+    (source / "big.mkv").write_bytes(b"x" * 10_000)
+    (source / "mid.mkv").write_bytes(b"x" * 1_000)
+    seen: dict[str, list[str]] = {}
+
+    def fake(self: object, names: list[str], errors: object = None) -> list[dict[str, object]]:
+        seen["names"] = list(names)
+        return []
+
+    monkeypatch.setattr(organizer.GeminiClient, "identify", fake)
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = make_context(
+        tmp_path,
+        paths={"organizer_source": str(source)},
+        integrations={"gemini": {"api_key_ref": "GEMINI_API_KEY"}},
+    )
+    organizer.run(ctx)
+    assert seen["names"] == ["big.mkv", "mid.mkv", "small.mkv"]  # largest first
+
+
 def test_apply_unknown_target_none_not_moved(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -251,7 +314,7 @@ def test_apply_unknown_target_none_not_moved(
     src_file = source / "Mystery.mkv"
     src_file.write_bytes(b"data")
 
-    def fake(self: object, names: list[str]) -> list[dict[str, object]]:
+    def fake(self: object, names: list[str], errors: object = None) -> list[dict[str, object]]:
         # high confidence but unknown type → target is None → not applicable.
         return [
             {"filename": "Mystery.mkv", "type": "unknown", "title": "Mystery", "confidence": 99}
@@ -298,7 +361,7 @@ def test_apply_target_outside_roots_is_skipped_gracefully(
     src_file = source / "Dune.2021.mkv"
     src_file.write_bytes(b"data")
 
-    def fake(self: object, names: list[str]) -> list[dict[str, object]]:
+    def fake(self: object, names: list[str], errors: object = None) -> list[dict[str, object]]:
         # Hallucinated title with traversal → target escapes the movies root.
         return [
             {

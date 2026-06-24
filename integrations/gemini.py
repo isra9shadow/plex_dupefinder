@@ -30,12 +30,17 @@ _RATE_LIMIT = 429
 _RETRYABLE_STATUS = frozenset({_RATE_LIMIT, 500, 502, 503, 504})
 
 _PROMPT_HEADER = (
-    "You are a media librarian. For each input filename, identify the title as "
-    "reliably as possible (more reliably than a regex-based renamer like FileBot). "
+    "You are a media librarian. Each input is a RELATIVE FILE PATH (folders + "
+    "filename, '/'-separated). Identify the title as reliably as possible (more "
+    "reliably than a regex-based renamer like FileBot). IMPORTANT: use the WHOLE "
+    "path for clues — the parent/grandparent folder name is often the series or "
+    "movie title (e.g. 'Breaking Bad/S01/ep1.mkv') even when the filename alone is "
+    "uninformative; but folder names are not always reliable, so weigh the "
+    "filename too and lower your confidence when they conflict or are vague. "
     "Decide whether it is a movie or a TV series episode. Return STRICT JSON only: "
     "a JSON array with one object per input, in the SAME ORDER as the input, each "
     "with exactly these keys:\n"
-    '  "filename"   : the original input filename (echo it back verbatim)\n'
+    '  "filename"   : the input path, echoed back VERBATIM (exactly as given)\n'
     '  "type"       : "movie" | "series" | "unknown"\n'
     '  "title"      : canonical title in its original language, no year/tags\n'
     '  "year"       : integer release year, or null if unknown\n'
@@ -44,7 +49,7 @@ _PROMPT_HEADER = (
     '  "confidence" : integer 0-100, your honest certainty in this identification\n'
     'Do not invent titles. If you cannot tell, use type "unknown" and a low '
     "confidence. Output ONLY the JSON array, no prose, no code fences.\n\n"
-    "Filenames:\n"
+    "Paths:\n"
 )
 
 
@@ -80,6 +85,7 @@ class GeminiClient:
         poster: JsonPoster = _urllib_post,
         max_retries: int = 3,
         backoff_base: float = 1.0,
+        request_delay: float = 0.0,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         if not api_key:
@@ -92,6 +98,7 @@ class GeminiClient:
         self._post = poster
         self._max_retries = max(0, max_retries)
         self._backoff_base = backoff_base
+        self._request_delay = max(0.0, request_delay)
         self._sleep = sleeper
 
     def _generate(self, prompt: str) -> str:
@@ -156,16 +163,35 @@ class GeminiClient:
             raise IntegrationError("Gemini suggestions must be a JSON array")
         return [_as_dict(item) for item in parsed]
 
-    def identify(self, filenames: Sequence[str]) -> list[dict[str, object]]:
-        """Return one raw suggestion dict per filename (batched).
+    def identify(
+        self,
+        paths: Sequence[str],
+        *,
+        errors: list[IntegrationError] | None = None,
+    ) -> list[dict[str, object]]:
+        """Return one raw suggestion dict per input path (batched).
 
-        The returned dicts are the model's payload, lightly normalised to dicts;
-        the caller is responsible for validating/typing them.
+        Each input is a relative path so the model can use folder-name hints (see
+        the prompt). The returned dicts are the model's payload, lightly
+        normalised; the caller validates/maps them by the echoed ``filename``.
+
+        Resilience: when ``errors`` is provided, a failing batch (e.g. a 429 after
+        retries) is appended to it and SKIPPED so the other batches still produce
+        results (partial success). When ``errors`` is None the first batch failure
+        propagates (back-compat). ``request_delay`` throttles between batches to
+        stay under free-tier rate limits.
         """
         out: list[dict[str, object]] = []
-        names = list(filenames)
+        names = list(paths)
         for start in range(0, len(names), self._batch_size):
+            if start and self._request_delay:
+                self._sleep(self._request_delay)
             batch = names[start : start + self._batch_size]
-            text = self._extract_text(self._generate(build_prompt(batch)))
-            out.extend(self._parse_suggestions(text))
+            try:
+                text = self._extract_text(self._generate(build_prompt(batch)))
+                out.extend(self._parse_suggestions(text))
+            except IntegrationError as exc:
+                if errors is None:
+                    raise
+                errors.append(exc)
         return out
