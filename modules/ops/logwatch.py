@@ -45,6 +45,7 @@ _DEFAULT_DAYS = 7.0  # last week
 _DEFAULT_MAX_LINES = 400  # global cap of DISTINCT error lines sent to the AI
 _DEFAULT_MAX_PER_CONTAINER = 60  # per-container cap of distinct error lines
 _DEFAULT_MAX_LOG_LINES = 20000  # --tail cap when pulling each container's week of logs
+_SUMMARY_LINES_PER_CONTAINER = 6  # error lines shown per container in summary.md
 
 # Case-insensitive markers of trouble in an application log line. Broad on
 # purpose (better to over-collect than miss a real error — duplicates are folded
@@ -183,9 +184,15 @@ def build_prompt(errors: list[ContainerErrors], days: float) -> str:
         "Eres un asistente de operaciones de un homelab. A continuacion tienes "
         f"lineas de error y advertencia extraidas de los logs de los ultimos "
         f"{days:.0f} dias de varios contenedores Docker.\n\n"
-        "Escribe en ESPAÑOL un resumen breve y accionable que, agrupado por "
-        "contenedor, indique: (1) los patrones de error recurrentes, (2) la causa "
-        "raiz probable y (3) una accion recomendada. Se conciso; usa vinetas.\n\n"
+        "CONTEXTO: es un servidor UNRAID que SOLO usa Docker (no CRI-O, containerd "
+        "standalone, podman ni systemd dentro de los contenedores): IGNORA avisos "
+        "sobre esos runtimes y los warnings benignos/ruido repetitivo. Centrate en "
+        "los errores REALES y accionables (servicios caidos, conexiones rechazadas, "
+        "DB bloqueada, permisos, certificados). No inventes pasos genericos.\n\n"
+        "Escribe en ESPAÑOL un resumen breve y PRIORIZADO que, agrupado por "
+        "contenedor con problema real, indique: (1) el error, (2) la causa raiz "
+        "probable y (3) una accion concreta. Si un contenedor solo tiene ruido, "
+        "omitelo. Se conciso; usa vinetas.\n\n"
         f"{joined}"
     )
 
@@ -223,6 +230,17 @@ def _write_report(
         f"- {name}: {count}"
         for name, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
+    # The actual (de-duplicated) error lines per container, so the operator can
+    # SEE them directly — top few here, the full set lives in plan.json.
+    detail: list[str] = []
+    for entry in sorted(errors, key=lambda e: -len(e.lines)):
+        detail.append(f"### {entry.name}")
+        detail.extend(f"- {line}" for line in entry.lines[:_SUMMARY_LINES_PER_CONTAINER])
+        if len(entry.lines) > _SUMMARY_LINES_PER_CONTAINER:
+            detail.append(
+                f"- … (+{len(entry.lines) - _SUMMARY_LINES_PER_CONTAINER} más en plan.json)"
+            )
+        detail.append("")
     lines = [
         "# Logwatch summary",
         "",
@@ -237,6 +255,8 @@ def _write_report(
         "## AI summary",
         summary or "(no summary)",
         "",
+        "## Errores por contenedor (deduplicados)",
+        *(detail or ["(ninguno)"]),
     ]
     if note:
         lines += [f"> {note}", ""]
