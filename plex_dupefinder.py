@@ -1842,6 +1842,31 @@ def has_sane_metadata(part_info):
     return True, ""
 
 
+def _candidate_max_age(pi):
+    """Oldest on-disk part age (hours) for a candidate, 0.0 if unknown."""
+    ages = [ex.get('age_hours') for ex in pi.get('parts_existence', [])
+            if ex.get('age_hours') is not None]
+    return max(ages) if ages else 0.0
+
+
+def _tiebreak_close_scores(parts, existing_ids, best_score, threshold):
+    """Deterministic keeper when scores are too close to decide (opt-in).
+
+    Among the candidates within ``threshold`` of the best score (the indecision
+    band), keep the LARGEST file, then the OLDEST, then the lowest media id — a
+    total order, so the choice is stable and reproducible. Only reached when
+    SCORE_DELTA_TIEBREAKER is enabled; otherwise such groups are skipped.
+    """
+    band = [mid for mid in existing_ids
+            if best_score - int(parts[mid]['score']) < threshold]
+
+    def _key(mid):
+        pi = parts[mid]
+        return (pi.get('file_size', 0) or 0, _candidate_max_age(pi), -int(pi['id']))
+
+    return max(band, key=_key)
+
+
 def select_keeper(parts):
     """
     Apply all safety checks and return a decision dict.
@@ -1933,10 +1958,20 @@ def select_keeper(parts):
         decision['score_delta'] = delta
         threshold = int(cfg.get('MIN_SCORE_DIFFERENCE', 0))
         if threshold > 0 and delta < threshold:
-            decision['skip'] = True
-            decision['skip_reason'] = 'score delta %d below threshold %d' % (delta, threshold)
-            decision['reason'] = 'score delta too small'
-            return decision
+            tiebreaker = str(cfg.get('SCORE_DELTA_TIEBREAKER', '') or '').strip().lower()
+            if tiebreaker in ('size', 'size_age', 'on', 'true', '1'):
+                # Too close to decide by score: break the tie deterministically
+                # (largest file, then oldest) instead of skipping the group.
+                keeper_id = _tiebreak_close_scores(parts, existing_ids, best_score, threshold)
+                decision['reason'] = (
+                    'score delta %d < threshold %d; tiebreaker (largest file, then '
+                    'oldest) chose keeper' % (delta, threshold)
+                )
+            else:
+                decision['skip'] = True
+                decision['skip_reason'] = 'score delta %d below threshold %d' % (delta, threshold)
+                decision['reason'] = 'score delta too small'
+                return decision
 
     # Size-ratio sanity check
     max_ratio = float(cfg.get('MAX_SIZE_RATIO', 0))
@@ -1969,7 +2004,10 @@ def select_keeper(parts):
                 return decision
 
     decision['keeper_id'] = keeper_id
-    decision['reason'] = 'highest score (%d) among existing files' % best_score
+    # Preserve a reason already set by the score-delta tiebreaker; otherwise the
+    # keeper is simply the highest score.
+    if decision['reason'] is None:
+        decision['reason'] = 'highest score (%d) among existing files' % best_score
     return decision
 
 

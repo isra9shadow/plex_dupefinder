@@ -114,6 +114,11 @@ base_config = {
     # Refuse to choose between two candidates whose scores are this close.
     # 0 disables the check. Recommended: >=1000 to require a clear winner.
     'MIN_SCORE_DIFFERENCE': 0,
+    # When two candidates are within MIN_SCORE_DIFFERENCE (too close to decide by
+    # score), normally the group is SKIPPED. Set this to 'size' to instead break
+    # the tie deterministically: keep the LARGEST file, then the OLDEST, then the
+    # lowest media id. '' / 'off' (default) keeps the safe skip behaviour.
+    'SCORE_DELTA_TIEBREAKER': '',
     # Skip any group whose files are younger than this many hours. Protects
     # against race conditions with active downloads/moves/scans.
     # 0 disables. Default 24 = wait a day before considering a file stable.
