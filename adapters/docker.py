@@ -18,6 +18,8 @@ class ContainerInfo:
     ports: list[str]
     networks: list[str]
     mounts: list[str]
+    restart_count: int = 0
+    started_at: str = ""
 
 
 def _as_dict(value: object) -> dict[str, object]:
@@ -27,6 +29,11 @@ def _as_dict(value: object) -> dict[str, object]:
 def _get_str(data: Mapping[str, object], key: str) -> str:
     value = data.get(key)
     return value if isinstance(value, str) else ""
+
+
+def _get_int(data: Mapping[str, object], key: str) -> int:
+    value = data.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _parse_ports(netset: Mapping[str, object]) -> list[str]:
@@ -54,13 +61,16 @@ def _parse_mounts(value: object) -> list[str]:
 def _parse_container(raw: object) -> ContainerInfo:
     data = _as_dict(raw)
     netset = _as_dict(data.get("NetworkSettings"))
+    state = _as_dict(data.get("State"))
     return ContainerInfo(
         name=_get_str(data, "Name").lstrip("/"),
         image=_get_str(_as_dict(data.get("Config")), "Image"),
-        state=_get_str(_as_dict(data.get("State")), "Status"),
+        state=_get_str(state, "Status"),
         ports=_parse_ports(netset),
         networks=sorted(_as_dict(netset.get("Networks"))),
         mounts=_parse_mounts(data.get("Mounts")),
+        restart_count=_get_int(data, "RestartCount"),
+        started_at=_get_str(state, "StartedAt"),
     )
 
 
