@@ -1,27 +1,23 @@
 """Results analyst — a "second pair of eyes" over the whole media pipeline.
 
-It gathers what the automation could NOT finish and asks the local LLM to explain
-it and recommend actions, so the operator does not have to read raw reports:
+It gathers what the automation could NOT finish and asks the local LLM (via the
+``aictx`` context layer) for a STRUCTURED, homelab-specific diagnosis:
 
-  1. ORGANIZER — ``reports/organizer/plan.json`` → the ``needs_review`` files the
-     organizer left in place (low confidence / unresolved).
-  2. DUPEFINDER — the latest ``dupefinder_report_*.json`` (legacy engine) →
-     duplicate groups it did NOT process, aggregated by skip reason, plus the
-     failure summary.
+  1. ORGANIZER — ``reports/organizer/plan.json`` → ``needs_review`` files.
+  2. DUPEFINDER — latest ``dupefinder_report_*.json`` → skipped duplicate groups
+     (aggregated by normalized skip reason) + failure summary.
 
-Then it builds local heuristics (always written, even if Ollama is down) and one
-Ollama summary that groups everything by probable cause and gives a concrete,
-prioritized action per group (Spanish output).
+The data is shaped into a compact ModuleContext block and combined with the
+SystemContext (Unraid facts/constraints) and CapabilitiesContext by the
+``PromptBuilder``; ``OllamaClient.generate_json`` returns JSON validated against
+``DIAGNOSIS_SCHEMA``; ``aictx.guard`` strips any non-Unraid command; ``aictx.render``
+turns it into markdown. Local heuristics are always written (even if Ollama is down).
 
-Strictly READ-ONLY (INVARIANT I1): reads reports, writes only its own report
-under ``reporting.dir / "analyst"``. An unreachable Ollama is recorded and does
-NOT abort. The Docker-log half of the diagnosis is the sibling ``logwatch``
-module (the menu runs both).
+Strictly READ-ONLY (INVARIANT I1): reads reports, writes only its own report under
+``reporting.dir / "analyst"``. An unreachable Ollama is recorded and does NOT abort.
 
 Config (config.json):
-  integrations.analyst : {max_items, dupefinder_reports}
-    max_items          : cap of needs_review items fed to the AI (default 100)
-    dupefinder_reports : dir holding dupefinder_report_*.json (legacy JSON_REPORT_DIR)
+  integrations.analyst : {max_items, dupefinder_reports, num_ctx}
   integrations.ollama  : {base_url, model, ...}  # reused as the AI backend
 """
 
@@ -32,12 +28,20 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from aictx import guard, render
+from aictx.builder import PromptBuilder
+from aictx.provider import ContextProvider
+from aictx.providers.capabilities import CapabilitiesContextProvider
+from aictx.providers.module import ModuleContextProvider
+from aictx.providers.system import SystemContextProvider
+from aictx.templates import analyst as analyst_template
 from core.errors import ConfigError, IntegrationError
 from core.registry import register
 from core.types import FailureRecord, ModuleResult, RunContext
 from integrations.ollama import OllamaClient
 
 _DEFAULT_MAX_ITEMS = 100
+_DEFAULT_NUM_CTX = 8192
 # Collapse the variable numbers in a skip reason so identical causes bucket
 # together, e.g. "score delta 740 below threshold 1000" -> "score delta N below
 # threshold N".
@@ -193,64 +197,51 @@ def _ollama(ctx: RunContext) -> OllamaClient:
     return OllamaClient(base_url=base, model=model)
 
 
-def _max_items(ctx: RunContext) -> int:
-    value = ctx.config.integrations.get("analyst", {}).get("max_items", _DEFAULT_MAX_ITEMS)
-    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-        return value
-    return _DEFAULT_MAX_ITEMS
+def _analyst_cfg(ctx: RunContext, key: str, default: int) -> int:
+    value = ctx.config.integrations.get("analyst", {}).get(key, default)
+    return (
+        value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else default
+    )
 
 
-def build_prompt(
+def module_body(
     items: list[dict[str, object]], org_stats: dict[str, object], dupe: DupeReport | None
 ) -> str:
-    """One Spanish prompt: act as a second person reviewing the whole pipeline."""
+    """Compact ModuleContext body: the organizer + dupefinder data the AI must explain.
+
+    Only DATA here — the role, constraints and output format live in the system /
+    capabilities providers and the analyst template (single source of truth).
+    """
     parts = [
-        "Eres un asistente que actua como una SEGUNDA PERSONA revisando el estado de "
-        "un homelab de medios para ahorrar tiempo al operador. Analiza los datos y "
-        "escribe en ESPANOL un informe breve, PRIORIZADO y ACCIONABLE.",
-        "",
+        "DOMINIO: los ficheros no identificados con confianza SE QUEDAN donde estan "
+        "(no hay carpeta de 'revision manual'). No recomiendes mover a revision ni "
+        "bajar el umbral a 10-20%."
     ]
     if items:
         lines = [
             f"- [{_conf(i):.0f}%] ({_str(i, 'kind') or 'unknown'}) {_str(i, 'filename')}"
             for i in items
         ]
-        parts += [
-            "## Organizer: ficheros NO movidos (needs_review)",
-            f"Resumen: {json.dumps(org_stats, ensure_ascii=False)}",
-            *lines,
-            "",
-        ]
+        parts.append(
+            "Organizer — needs_review (no movidos):\n"
+            f"Resumen: {json.dumps(org_stats, ensure_ascii=False)}\n" + "\n".join(lines)
+        )
     if dupe is not None and dupe.has_data:
-        parts += [
-            "## Dupefinder: duplicados NO procesados",
-            f"Resumen: {json.dumps(dupe.summary, ensure_ascii=False)}",
-            f"Fallos: {json.dumps(dupe.failure_summary, ensure_ascii=False)}",
-            f"Motivos de skip (motivo: n grupos): {json.dumps(dupe.skips, ensure_ascii=False)}",
-            "",
-        ]
-    parts += [
-        "CONTEXTO IMPORTANTE: NO existe carpeta de 'revision manual'. Un fichero "
-        "que no se identifica con confianza simplemente SE QUEDA DONDE ESTA (no se "
-        "mueve a ningun sitio). Por tanto NO recomiendes 'mover a carpeta de "
-        "revision'. Tampoco recomiendes bajar el umbral a valores muy bajos "
-        "(10-20%): movería ficheros mal identificados.",
-        "",
-        "Para cada problema agrupa por CAUSA probable y da una ACCION concreta y "
-        "REALISTA: mejorar la identificacion (anadir patron al parser, asegurar que "
-        "la IA/Gemini se ejecuta), refrescar metadata en Plex, renombrar el fichero "
-        "a mano, revisar permisos, o ACEPTAR/IGNORAR (p.ej. videos caseros "
-        "'video_AAAA-MM-DD' o clips que deben quedarse donde estan). Usa vinetas y "
-        "prioriza lo que mas ficheros/duplicados desbloquea de verdad. Se conciso.",
-    ]
-    return "\n".join(parts)
+        parts.append(
+            "Dupefinder — duplicados NO procesados:\n"
+            f"Resumen: {json.dumps(dupe.summary, ensure_ascii=False)}\n"
+            f"Fallos: {json.dumps(dupe.failure_summary, ensure_ascii=False)}\n"
+            f"Motivos de skip (motivo: n grupos): {json.dumps(dupe.skips, ensure_ascii=False)}"
+        )
+    return "\n\n".join(parts)
 
 
 def _write_report(
     ctx: RunContext,
     org_stats: dict[str, object],
     dupe: DupeReport | None,
-    summary: str,
+    diagnosis: dict[str, object] | None,
+    summary_md: str,
     note: str,
 ) -> None:
     out_dir = ctx.config.reporting.dir / "analyst"
@@ -260,6 +251,7 @@ def _write_report(
             {
                 "organizer": org_stats,
                 "dupefinder": asdict(dupe) if dupe is not None else None,
+                "diagnosis": diagnosis,
                 "note": note,
             },
             indent=2,
@@ -285,10 +277,14 @@ def _write_report(
             f"Fallos: {json.dumps(dupe.failure_summary, ensure_ascii=False)}",
             "",
         ]
-    lines += ["## Analisis IA", summary or "(sin resumen)", ""]
+    lines += [
+        "---",
+        "",
+        summary_md.strip() if summary_md else "## Analisis IA\n(sin diagnostico IA)",
+    ]
     if note:
-        lines += [f"> {note}", ""]
-    (out_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
+        lines += ["", f"> {note}"]
+    (out_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 @register("analyst")
@@ -312,25 +308,42 @@ def run(ctx: RunContext) -> ModuleResult:
         return result
 
     has_data = bool(needs_review) or (dupe is not None and dupe.has_data)
-    summary = ""
+    diagnosis: dict[str, object] | None = None
+    summary_md = ""
     note = ""
     if has_data:
-        items = needs_review[: _max_items(ctx)]
+        items = needs_review[: _analyst_cfg(ctx, "max_items", _DEFAULT_MAX_ITEMS)]
+        num_ctx = _analyst_cfg(ctx, "num_ctx", _DEFAULT_NUM_CTX)
+        providers: list[ContextProvider] = [
+            SystemContextProvider(),
+            CapabilitiesContextProvider(),
+            ModuleContextProvider(
+                "Datos del organizador y del dupefinder", module_body(items, org_stats, dupe)
+            ),
+        ]
+        built = PromptBuilder(num_ctx=num_ctx).build(analyst_template.TEMPLATE, providers)
         try:
-            summary = _ollama(ctx).complete(build_prompt(items, org_stats, dupe))
+            payload = _ollama(ctx).generate_json(
+                built.prompt, built.schema, system=built.system, num_ctx=num_ctx
+            )
+            clean, vetoed = guard.sanitize_payload(payload)
+            diagnosis = clean
+            summary_md = render.render_markdown(clean)
+            if vetoed:
+                note = f"comandos no-Unraid vetados por el guard: {len(vetoed)}"
         except (ConfigError, IntegrationError) as exc:
-            note = "Ollama no disponible — se guardan los datos sin resumen IA."
+            note = "Ollama no disponible — heuristicas guardadas sin diagnostico IA."
             result.add_failure(FailureRecord(category="integration", message=f"ollama: {exc}"))
     else:
         note = "Nada que analizar: el organizador movio todo y no hay skips de duplicados."
 
-    _write_report(ctx, org_stats, dupe, summary, note)
+    _write_report(ctx, org_stats, dupe, diagnosis, summary_md, note)
     dupe_skips = dupe.skip_total if dupe is not None else 0
     ctx.logger.info(
         "analyst done",
         needs_review=len(needs_review),
         dupe_skips=dupe_skips,
-        summarised=bool(summary),
+        diagnosed=bool(diagnosis),
     )
     result.metrics["needs_review"] = float(len(needs_review))
     result.metrics["dupe_skips"] = float(dupe_skips)

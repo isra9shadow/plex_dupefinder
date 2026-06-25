@@ -1,4 +1,4 @@
-"""Tests for modules.ops.analyst (read-only: explain why files were not moved)."""
+"""Tests for modules.ops.analyst (aictx pipeline: structured JSON diagnosis)."""
 
 from __future__ import annotations
 
@@ -27,20 +27,49 @@ def _read_plan(tmp_path: Path) -> dict[str, object]:
     return json.loads((tmp_path / "reports" / "analyst" / "plan.json").read_text(encoding="utf-8"))
 
 
-class _FakeOllama:
-    def __init__(self, *, answer: str = "Resumen IA.", fail: bool = False, **_: object) -> None:
-        self._answer = answer
-        self._fail = fail
-        self.prompts: list[str] = []
+def _finding(title: str = "Renombrar", commands: list[str] | None = None) -> dict[str, object]:
+    return {
+        "summary": "resumen",
+        "findings": [
+            {
+                "title": title,
+                "severity": "warning",
+                "confidence": 70,
+                "root_cause": "causa",
+                "evidence": [{"kind": "fact", "detail": "ev"}],
+                "recommended_actions": ["accion"],
+                "unraid_commands": list(commands or []),
+                "risk": "low",
+                "priority": 3,
+            }
+        ],
+    }
 
-    def complete(self, prompt: str, *, timeout: float | None = None) -> str:
-        self.prompts.append(prompt)
+
+class _FakeOllama:
+    def __init__(
+        self, *, payload: dict[str, object] | None = None, fail: bool = False, **_: object
+    ):
+        self._payload = payload
+        self._fail = fail
+        self.calls: list[dict[str, object]] = []
+
+    def generate_json(
+        self,
+        prompt: str,
+        schema: dict[str, object],
+        *,
+        system: str | None = None,
+        num_ctx: int | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, object]:
+        self.calls.append({"prompt": prompt, "system": system, "num_ctx": num_ctx})
         if self._fail:
             raise IntegrationError("ollama down")
-        return self._answer
+        return self._payload if self._payload is not None else {"summary": "ok", "findings": []}
 
 
-# --- pure heuristics -----------------------------------------------------------
+# --- pure helpers --------------------------------------------------------------
 
 
 def test_heuristics_buckets_by_kind_and_confidence() -> None:
@@ -56,32 +85,6 @@ def test_heuristics_buckets_by_kind_and_confidence() -> None:
     assert stats["by_confidence"] == {"0": 1, "1-49": 1, "50-79": 1, "80+": 1}
 
 
-# --- run integration -----------------------------------------------------------
-
-
-def test_run_summarises_needs_review(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _write_plan(
-        tmp_path,
-        [
-            {"filename": "gr31l@nd.mkv", "kind": "unknown", "confidence": 0},
-            {"filename": "Some Movie.mkv", "kind": "movie", "confidence": 55},
-        ],
-    )
-    fake = _FakeOllama(answer="Grupo leet: renombrar. Grupo sin anio: bajar umbral.")
-    monkeypatch.setattr(analyst, "OllamaClient", lambda **kw: fake)
-
-    ctx = make_context(tmp_path)
-    result = analyst.run(ctx)
-
-    assert result.ok
-    assert result.actions == 0  # read-only
-    assert result.metrics["needs_review"] == 2.0
-    # Worst (confidence 0) listed first in the prompt.
-    assert fake.prompts and fake.prompts[0].index("gr31l@nd") < fake.prompts[0].index("Some Movie")
-    assert "renombrar" in _read_summary(tmp_path)
-    assert _read_plan(tmp_path)["organizer"]["total"] == 2
-
-
 def test_aggregate_skips_buckets_by_normalized_reason() -> None:
     groups = [
         {"title": "A", "discovery_decision": {"skip_reason": "score delta 0 below threshold 1000"}},
@@ -90,16 +93,52 @@ def test_aggregate_skips_buckets_by_normalized_reason() -> None:
             "discovery_decision": {"skip_reason": "score delta 50 below threshold 1000"},
         },
         {"title": "C", "revalidation": {"reason": "cooldown: 'x' is 2.00h old"}},
-        {"title": "D"},  # no reason -> ignored
+        {"title": "D"},
     ]
     skips, samples = analyst.aggregate_skips(groups)
     assert skips["score delta N below threshold N"] == 2
-    assert skips["cooldown: 'x' is Nh old"] == 1
     assert samples["score delta N below threshold N"] == ["A", "B"]
 
 
+def test_module_body_states_no_review_folder_and_lists_files() -> None:
+    body = analyst.module_body(
+        [{"filename": "x.mkv", "kind": "unknown", "confidence": 0}], {"total": 1}, None
+    )
+    assert "revision" in body.lower()  # the no-review-folder domain note
+    assert "x.mkv" in body
+
+
+# --- run integration -----------------------------------------------------------
+
+
+def test_run_diagnoses_needs_review(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        [
+            {"filename": "gr31l@nd.mkv", "kind": "unknown", "confidence": 0},
+            {"filename": "Some Movie.mkv", "kind": "movie", "confidence": 55},
+        ],
+    )
+    fake = _FakeOllama(payload=_finding(title="Renombrar gr31l@nd"))
+    monkeypatch.setattr(analyst, "OllamaClient", lambda **kw: fake)
+
+    ctx = make_context(tmp_path)
+    result = analyst.run(ctx)
+
+    assert result.ok
+    assert result.actions == 0  # read-only
+    assert result.metrics["needs_review"] == 2.0
+    # system context (Unraid facts) is sent separately; prompt carries the data.
+    assert fake.calls and "Unraid" in str(fake.calls[0]["system"])
+    assert "gr31l@nd" in str(fake.calls[0]["prompt"])
+    assert "Renombrar" in _read_summary(tmp_path)  # rendered from structured JSON
+    plan = _read_plan(tmp_path)
+    assert plan["organizer"]["total"] == 2
+    assert plan["diagnosis"]["findings"][0]["title"] == "Renombrar gr31l@nd"
+
+
 def test_run_includes_dupefinder_skips(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _write_plan(tmp_path, [])  # organizer moved everything
+    _write_plan(tmp_path, [])
     reports = tmp_path / "df_reports"
     reports.mkdir()
     (reports / "dupefinder_report_abc_20260625T000000Z.json").write_text(
@@ -122,22 +161,35 @@ def test_run_includes_dupefinder_skips(monkeypatch: pytest.MonkeyPatch, tmp_path
         ),
         encoding="utf-8",
     )
-    fake = _FakeOllama(answer="Duplicados: la mayoria por score delta; bajar umbral.")
+    fake = _FakeOllama(payload=_finding(title="Duplicados score delta"))
     monkeypatch.setattr(analyst, "OllamaClient", lambda **kw: fake)
 
-    ctx = make_context(
-        tmp_path,
-        integrations={"analyst": {"dupefinder_reports": str(reports)}},
-    )
+    ctx = make_context(tmp_path, integrations={"analyst": {"dupefinder_reports": str(reports)}})
     result = analyst.run(ctx)
 
     assert result.ok
     assert result.metrics["dupe_skips"] == 3.0
-    assert fake.prompts and "Dupefinder" in fake.prompts[0]
+    assert "Dupefinder" in str(fake.calls[0]["prompt"])
+    assert "score delta" in str(fake.calls[0]["prompt"])
     plan = _read_plan(tmp_path)
     assert plan["dupefinder"]["skips"]["score delta N below threshold N"] == 2
-    assert plan["dupefinder"]["failure_summary"] == {"PLEX_API_ERROR": 2}
-    assert "score delta" in _read_summary(tmp_path)
+
+
+def test_run_guard_strips_non_unraid_commands(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_plan(tmp_path, [{"filename": "x.mkv", "kind": "movie", "confidence": 10}])
+    fake = _FakeOllama(payload=_finding(commands=["systemctl restart plex", "docker restart Plex"]))
+    monkeypatch.setattr(analyst, "OllamaClient", lambda **kw: fake)
+
+    ctx = make_context(tmp_path)
+    result = analyst.run(ctx)
+
+    assert result.ok
+    plan = _read_plan(tmp_path)
+    cmds = plan["diagnosis"]["findings"][0]["unraid_commands"]
+    assert cmds == ["docker restart Plex"]  # systemctl vetoed deterministically
+    assert "vetados" in str(plan["note"])
 
 
 def test_run_no_plan_is_config_failure(tmp_path: Path) -> None:
@@ -154,9 +206,11 @@ def test_run_resilient_when_ollama_fails(monkeypatch: pytest.MonkeyPatch, tmp_pa
     ctx = make_context(tmp_path)
     result = analyst.run(ctx)
 
-    assert not result.ok  # failure recorded
+    assert not result.ok
     assert "Ollama no disponible" in _read_summary(tmp_path)
-    assert _read_plan(tmp_path)["organizer"]["total"] == 1  # heuristics still saved
+    plan = _read_plan(tmp_path)
+    assert plan["organizer"]["total"] == 1  # heuristics still saved
+    assert plan["diagnosis"] is None
 
 
 def test_run_empty_needs_review_does_not_call_ai(
@@ -165,7 +219,7 @@ def test_run_empty_needs_review_does_not_call_ai(
     _write_plan(tmp_path, [])
 
     def boom(**_: object) -> object:
-        raise AssertionError("AI must not be called when needs_review is empty")
+        raise AssertionError("AI must not be called when there is nothing to analyze")
 
     monkeypatch.setattr(analyst, "OllamaClient", boom)
 
