@@ -38,7 +38,7 @@ from core.registry import register
 from core.types import FailureRecord, ModuleResult, RunContext
 from integrations.ollama import OllamaClient
 
-_DEFAULT_DAYS = 3.0
+_DEFAULT_DAYS = 7.0  # last week
 _DEFAULT_MAX_LINES = 400
 
 # Case-insensitive markers of trouble in an application log line. ``5\d\d`` catches

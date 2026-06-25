@@ -352,26 +352,26 @@ def action_extract():
             _run(extractor_command(dry=False, image=image))
 
 
+def _show_report(subdir, label):
+    """Print a module's latest summary.md (or a friendly note if it is missing)."""
+    summary = os.path.join(_izumi_reports_dir(), subdir, "summary.md")
+    if os.path.isfile(summary):
+        with open(summary, encoding="utf-8") as fh:
+            print("\n" + _title(label) + "\n" + fh.read())
+    else:
+        print(_dim(f"\n(no hay {label} todavía en {summary})"))
+
+
 def action_analyst():
-    """Explain (with the local AI) why the organizer left files in needs_review."""
-    _run(analyst_command(image=ensure_image()))
-    summary = os.path.join(_izumi_reports_dir(), "analyst", "summary.md")
-    if os.path.isfile(summary):
-        with open(summary, encoding="utf-8") as fh:
-            print("\n" + fh.read())
-    else:
-        print(_dim(f"\n(no hay análisis todavía en {summary})"))
-
-
-def action_logwatch():
-    """Read recent Docker logs, find errors and summarize them with the local AI."""
-    _run(logwatch_command(image=ensure_image()))
-    summary = os.path.join(_izumi_reports_dir(), "logwatch", "summary.md")
-    if os.path.isfile(summary):
-        with open(summary, encoding="utf-8") as fh:
-            print("\n" + fh.read())
-    else:
-        print(_dim(f"\n(no hay resumen todavía en {summary})"))
+    """Full AI diagnosis: last-week Docker logs (errors/warnings) + the organizer's
+    needs_review, each summarized by the local AI."""
+    image = ensure_image()
+    print("\n[1/2] Revisando logs de Docker (última semana)...")
+    _run(logwatch_command(image=image))
+    print("\n[2/2] Analizando resultados del organizador...")
+    _run(analyst_command(image=image))
+    _show_report("logwatch", "Logs Docker (IA)")
+    _show_report("analyst", "Resultados organizer (IA)")
 
 
 def action_full_maintenance():
@@ -500,8 +500,7 @@ MENU = [
         action_full_maintenance,
     ),
     ("Ver último plan del organizador", action_show_organizer_plan),
-    ("Analista IA — por qué no se movieron ficheros (needs_review)", action_analyst),
-    ("Logs Docker — resumen de errores con IA (últimos días)", action_logwatch),
+    ("Analista IA — logs Docker (última semana) + resultados organizer", action_analyst),
     ("Configuración (activar/desactivar opciones)", action_config),
     ("Healthcheck de la plataforma", action_health),
     ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),
