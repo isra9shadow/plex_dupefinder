@@ -8,11 +8,13 @@ What it does:
      (``--tail`` bounded), keeps only error/warning lines, and FOLDS repeats into
      one ``line (xN)`` so a noisy container can't drown the AI. Per-container and
      global caps apply; every scanned container's error count is reported.
-  2. SUMMARISE (AI, best-effort) — when any error lines were found it asks the
-     local Ollama model (``integrations/ollama``) for ONE concise Spanish summary
-     grouped by container: recurring patterns, probable root cause, recommended
-     action. The raw grouped errors + meta always land in ``plan.json``; the AI
-     prose lands in ``summary.md``.
+  2. DIAGNOSE (AI, best-effort) — when any error lines were found it builds an
+     aictx prompt (SystemContext Unraid facts + Capabilities + Inventory + live
+     Runtime + grouped errors as ModuleContext + incident History) and calls
+     ``OllamaClient.generate_json`` for a STRUCTURED diagnosis (DIAGNOSIS_SCHEMA);
+     ``aictx.guard`` strips non-Unraid commands, ``aictx.render`` makes the
+     markdown, and each finding is recorded as an incident (memory). The raw
+     grouped errors + the validated diagnosis land in ``plan.json``.
 
 This module is strictly READ-ONLY: it never moves, deletes or quarantines
 anything (INVARIANT I1), the only thing it writes is its own report under
@@ -31,11 +33,23 @@ Config (config.json):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
 
 from adapters import docker
+from aictx import guard, render
+from aictx.builder import PromptBuilder
+from aictx.provider import ContextProvider
+from aictx.providers.capabilities import CapabilitiesContextProvider
+from aictx.providers.history import HistoryContextProvider
+from aictx.providers.inventory import InventoryContextProvider
+from aictx.providers.module import ModuleContextProvider
+from aictx.providers.runtime import RuntimeContextProvider
+from aictx.providers.system import SystemContextProvider
+from aictx.templates import logwatch as logwatch_template
+from core.cache import SqliteCache
 from core.errors import ConfigError, IntegrationError
 from core.registry import register
 from core.types import FailureRecord, ModuleResult, RunContext
@@ -46,6 +60,7 @@ _DEFAULT_MAX_LINES = 400  # global cap of DISTINCT error lines sent to the AI
 _DEFAULT_MAX_PER_CONTAINER = 60  # per-container cap of distinct error lines
 _DEFAULT_MAX_LOG_LINES = 20000  # --tail cap when pulling each container's week of logs
 _SUMMARY_LINES_PER_CONTAINER = 6  # error lines shown per container in summary.md
+_DEFAULT_NUM_CTX = 8192  # Ollama context window (8B on a 4060 — keep modest)
 
 # Case-insensitive markers of trouble in an application log line. Broad on
 # purpose (better to over-collect than miss a real error — duplicates are folded
@@ -132,6 +147,7 @@ class _Settings:
     max_error_lines: int  # global cap of distinct error lines fed to the AI
     max_per_container: int  # per-container cap of distinct error lines
     max_log_lines: int  # --tail cap when reading each container's logs
+    num_ctx: int  # Ollama context window
 
 
 def _int(cfg: dict[str, object], key: str, default: int) -> int:
@@ -160,6 +176,7 @@ def _settings(ctx: RunContext) -> _Settings:
         max_error_lines=_int(cfg, "max_error_lines", _DEFAULT_MAX_LINES),
         max_per_container=_int(cfg, "max_lines_per_container", _DEFAULT_MAX_PER_CONTAINER),
         max_log_lines=_int(cfg, "max_log_lines", _DEFAULT_MAX_LOG_LINES),
+        num_ctx=_int(cfg, "num_ctx", _DEFAULT_NUM_CTX),
     )
 
 
@@ -173,28 +190,46 @@ def _ollama(ctx: RunContext) -> OllamaClient:
     return OllamaClient(base_url=base, model=model)
 
 
-def build_prompt(errors: list[ContainerErrors], days: float) -> str:
-    """One prompt asking for a concise Spanish summary grouped by container."""
-    blocks: list[str] = []
-    for entry in errors:
-        body = "\n".join(entry.lines)
-        blocks.append(f"### Contenedor: {entry.name}\n{body}")
-    joined = "\n\n".join(blocks)
-    return (
-        "Eres un asistente de operaciones de un homelab. A continuacion tienes "
-        f"lineas de error y advertencia extraidas de los logs de los ultimos "
-        f"{days:.0f} dias de varios contenedores Docker.\n\n"
-        "CONTEXTO: es un servidor UNRAID que SOLO usa Docker (no CRI-O, containerd "
-        "standalone, podman ni systemd dentro de los contenedores): IGNORA avisos "
-        "sobre esos runtimes y los warnings benignos/ruido repetitivo. Centrate en "
-        "los errores REALES y accionables (servicios caidos, conexiones rechazadas, "
-        "DB bloqueada, permisos, certificados). No inventes pasos genericos.\n\n"
-        "Escribe en ESPAÑOL un resumen breve y PRIORIZADO que, agrupado por "
-        "contenedor con problema real, indique: (1) el error, (2) la causa raiz "
-        "probable y (3) una accion concreta. Si un contenedor solo tiene ruido, "
-        "omitelo. Se conciso; usa vinetas.\n\n"
-        f"{joined}"
-    )
+def module_body(errors: list[ContainerErrors]) -> str:
+    """Compact ModuleContext body: grouped, de-duplicated error lines per container.
+
+    Only DATA here — the role/constraints/output format live in the system /
+    capabilities providers and the logwatch template (single source of truth).
+    """
+    blocks = [f"### {entry.name}\n" + "\n".join(entry.lines) for entry in errors]
+    return "\n\n".join(blocks)
+
+
+def _incident_cache(ctx: RunContext) -> SqliteCache:
+    """Open the incident-memory store (recurring docker errors across runs)."""
+    return SqliteCache(ctx.config.reporting.dir / "cache" / "incidents.db")
+
+
+def _fingerprint(finding: dict[str, object]) -> str:
+    """Stable id for a finding so recurrences collapse (numbers masked)."""
+    title = finding.get("title")
+    norm = _NUM_RE.sub("N", str(title) if isinstance(title, str) else "").strip().lower()
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+
+
+def _record_incidents(cache: SqliteCache, diagnosis: dict[str, object]) -> None:
+    """Persist each finding so future runs surface recurrences / applied fixes."""
+    findings = diagnosis.get("findings")
+    if not isinstance(findings, list):
+        return
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        severity = finding.get("severity")
+        title = finding.get("title")
+        actions = finding.get("recommended_actions")
+        cache.record_incident(
+            _fingerprint(finding),
+            module="logwatch",
+            severity=severity if isinstance(severity, str) else "info",
+            title=title if isinstance(title, str) else "?",
+            recommended=actions if isinstance(actions, list) else [],
+        )
 
 
 def _write_report(
@@ -202,7 +237,8 @@ def _write_report(
     errors: list[ContainerErrors],
     counts: dict[str, int],
     days: float,
-    summary: str,
+    diagnosis: dict[str, object] | None,
+    diagnosis_md: str,
     note: str,
 ) -> None:
     out_dir = ctx.config.reporting.dir / "logwatch"
@@ -218,6 +254,7 @@ def _write_report(
                 "note": note,
                 "counts": counts,  # every scanned container -> its error-line count
                 "errors": {e.name: e.lines for e in errors},
+                "diagnosis": diagnosis,  # validated structured diagnosis (or None)
             },
             indent=2,
             sort_keys=True,
@@ -252,8 +289,8 @@ def _write_report(
         f"## Per container ({len(counts)})",
         *(per_container or ["(ninguno — ¿docker accesible? socket montado?)"]),
         "",
-        "## AI summary",
-        summary or "(no summary)",
+        "## Diagnostico IA",
+        diagnosis_md.strip() if diagnosis_md else "(sin diagnostico IA)",
         "",
         "## Errores por contenedor (deduplicados)",
         *(detail or ["(ninguno)"]),
@@ -298,7 +335,8 @@ def run(ctx: RunContext) -> ModuleResult:
     errors = _cap_recent(errors, settings.max_error_lines)
     total = sum(len(e.lines) for e in errors)
 
-    summary = ""
+    diagnosis: dict[str, object] | None = None
+    diagnosis_md = ""
     note = ""
     if not names:
         # Distinguish "docker unreachable" from "genuinely no containers" so the
@@ -314,21 +352,48 @@ def run(ctx: RunContext) -> ModuleResult:
             )
             result.add_failure(FailureRecord(category="integration", message=note))
     elif errors:
+        cache = _incident_cache(ctx)
         try:
-            summary = _ollama(ctx).complete(build_prompt(errors, settings.days))
-        except (ConfigError, IntegrationError) as exc:
-            note = "Ollama unavailable — raw errors saved without an AI summary."
-            result.add_failure(FailureRecord(category="integration", message=f"ollama: {exc}"))
+            history = cache.recent_incidents("logwatch")
+            providers: list[ContextProvider] = [
+                SystemContextProvider(),
+                CapabilitiesContextProvider(),
+                InventoryContextProvider(ctx.config.reporting.dir),
+                RuntimeContextProvider(),
+                ModuleContextProvider(
+                    "Errores de contenedores Docker (deduplicados)", module_body(errors)
+                ),
+                HistoryContextProvider(history),
+            ]
+            built = PromptBuilder(num_ctx=settings.num_ctx).build(
+                logwatch_template.TEMPLATE, providers
+            )
+            try:
+                payload = _ollama(ctx).generate_json(
+                    built.prompt, built.schema, system=built.system, num_ctx=settings.num_ctx
+                )
+                clean, vetoed = guard.sanitize_payload(payload)
+                diagnosis = clean
+                diagnosis_md = render.render_markdown(clean)
+                if vetoed:
+                    note = f"comandos no-Unraid vetados por el guard: {len(vetoed)}"
+                _record_incidents(cache, clean)
+                cache.save()
+            except (ConfigError, IntegrationError) as exc:
+                note = "Ollama unavailable — raw errors saved without an AI summary."
+                result.add_failure(FailureRecord(category="integration", message=f"ollama: {exc}"))
+        finally:
+            cache.close()
     else:
         note = "No error lines found in the scanned window."
 
-    _write_report(ctx, errors, counts, settings.days, summary, note)
+    _write_report(ctx, errors, counts, settings.days, diagnosis, diagnosis_md, note)
     ctx.logger.info(
         "logwatch done",
         containers=len(names),
         containers_with_errors=len(errors),
         error_lines=total,
-        summarised=bool(summary),
+        diagnosed=bool(diagnosis),
     )
     result.metrics["containers"] = float(len(names))
     result.metrics["error_lines"] = float(total)

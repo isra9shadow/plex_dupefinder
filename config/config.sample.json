@@ -56,7 +56,8 @@
       "containers": [],
       "max_error_lines": 400,
       "max_lines_per_container": 60,
-      "max_log_lines": 20000
+      "max_log_lines": 20000,
+      "num_ctx": 8192
     },
     "analyst": {
       "max_items": 100,

@@ -67,17 +67,60 @@ def _patch_docker(
     )
 
 
+class _NullRuntime:
+    """Stub so tests never shell out to docker/nvidia via the real runtime provider."""
+
+    name = "runtime"
+
+    def block(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _no_live_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(logwatch, "RuntimeContextProvider", lambda *a, **k: _NullRuntime())
+
+
+def _finding(title: str = "Hallazgo") -> dict[str, object]:
+    return {
+        "summary": "resumen",
+        "findings": [
+            {
+                "title": title,
+                "severity": "error",
+                "confidence": 80,
+                "root_cause": "causa",
+                "evidence": [{"kind": "fact", "detail": "ev"}],
+                "recommended_actions": ["accion"],
+                "unraid_commands": [],
+                "risk": "low",
+                "priority": 2,
+            }
+        ],
+    }
+
+
 class _FakeOllama:
-    def __init__(self, *, answer: str | None = None, fail: bool = False, **_: object) -> None:
-        self._answer = answer or "Resumen IA."
+    def __init__(
+        self, *, payload: dict[str, object] | None = None, fail: bool = False, **_: object
+    ):
+        self._payload = payload
         self._fail = fail
         self.prompts: list[str] = []
 
-    def complete(self, prompt: str, *, timeout: float | None = None) -> str:
+    def generate_json(
+        self,
+        prompt: str,
+        schema: dict[str, object],
+        *,
+        system: str | None = None,
+        num_ctx: int | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, object]:
         self.prompts.append(prompt)
         if self._fail:
             raise IntegrationError("ollama down")
-        return self._answer
+        return self._payload if self._payload is not None else _finding()
 
 
 def test_run_extracts_errors_and_writes_reports(
@@ -91,7 +134,7 @@ def test_run_extracts_errors_and_writes_reports(
             "Sonarr": "all fine here\n",
         },
     )
-    fake = _FakeOllama(answer="Plex: fallo de escaneo. Accion: revisar montaje.")
+    fake = _FakeOllama(payload=_finding(title="Plex: fallo de escaneo"))
     monkeypatch.setattr(logwatch, "OllamaClient", lambda **kw: fake)
 
     ctx = make_context(tmp_path, integrations={"logwatch": {"days": 2}})
@@ -101,13 +144,14 @@ def test_run_extracts_errors_and_writes_reports(
     assert result.actions == 0  # read-only
     assert result.metrics["containers"] == 2.0
     assert result.metrics["error_lines"] == 1.0
-    assert fake.prompts and "Contenedor: Plex" in fake.prompts[0]
+    assert fake.prompts and "### Plex" in fake.prompts[0]  # grouped error data in the prompt
 
     plan = _read_plan(tmp_path)
     assert plan["error_lines"] == 1
     assert "Plex" in plan["errors"]
     assert "Sonarr" not in plan["errors"]  # no error lines -> excluded
-    assert "fallo de escaneo" in _read_summary(tmp_path)
+    assert plan["diagnosis"]["findings"][0]["title"] == "Plex: fallo de escaneo"
+    assert "fallo de escaneo" in _read_summary(tmp_path)  # rendered from structured JSON
 
 
 def test_run_resilient_when_ollama_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
