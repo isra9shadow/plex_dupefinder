@@ -785,7 +785,10 @@ def run(ctx: RunContext) -> ModuleResult:
                 entry["filename"] = mapped  # normalise to the real relative path
                 if mapped not in best or _conf(entry) > _conf(best[mapped]):
                     best[mapped] = entry
-                if _conf(entry) >= escalate_below:
+                # An "unknown" answer is never final — always give the next
+                # provider a shot (e.g. Ollama gives up on a plain Spanish movie
+                # title, Gemini still knows it), regardless of escalate_below.
+                if str(entry.get("type")) != "unknown" and _conf(entry) >= escalate_below:
                     accepted.add(mapped)
             ai_inputs = [ln for ln in ai_inputs if input_to_rel[ln] not in accepted]
         raw.extend(best.values())

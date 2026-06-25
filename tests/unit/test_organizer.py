@@ -352,6 +352,58 @@ def test_ai_cascade_ollama_first_then_gemini(
     assert got_titles == {"One", "Two"}  # both resolved across the cascade
 
 
+def test_ai_cascade_unknown_escalates_to_gemini(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "manuales"
+    source.mkdir()
+    (source / "Entrenador Carter.mkv").write_bytes(b"a")  # plain title, no year
+    seen: dict[str, list[str]] = {}
+
+    def ollama_identify(
+        self: object, names: list[str], errors: object = None
+    ) -> list[dict[str, object]]:
+        seen["ollama"] = list(names)
+        # Ollama gives up (unknown, 0) — must NOT be accepted as final.
+        return [{"filename": "Entrenador Carter.mkv", "type": "unknown", "confidence": 0}]
+
+    def gemini_identify(
+        self: object, names: list[str], errors: object = None
+    ) -> list[dict[str, object]]:
+        seen["gemini"] = list(names)
+        return [
+            {
+                "filename": "Entrenador Carter.mkv",
+                "type": "movie",
+                "title": "Coach Carter",
+                "year": 2005,
+                "confidence": 95,
+            }
+        ]
+
+    monkeypatch.setattr(organizer.OllamaClient, "identify", ollama_identify)
+    monkeypatch.setattr(organizer.GeminiClient, "identify", gemini_identify)
+    monkeypatch.setattr(organizer.secrets, "require", lambda ref: "KEY")
+
+    ctx = make_context(
+        tmp_path,
+        paths={"organizer_source": str(source), "movies_root": "/M", "series_root": "/S"},
+        integrations={  # escalate_below left at default 0 — unknown still escalates
+            "ai": {"providers": ["ollama", "gemini"]},
+            "ollama": {"base_url": "http://ollama:11434", "model": "qwen3:8b"},
+            "gemini": {"api_key_ref": "GEMINI_API_KEY"},
+        },
+    )
+    result = organizer.run(ctx)
+
+    assert result.ok
+    assert seen["gemini"] == ["Entrenador Carter.mkv"]  # Ollama's unknown escalated
+    plan = json.loads(
+        (tmp_path / "reports" / "organizer" / "plan.json").read_text(encoding="utf-8")
+    )
+    assert plan["confident"][0]["title"] == "Coach Carter"
+
+
 # --- run integration -----------------------------------------------------------
 
 
