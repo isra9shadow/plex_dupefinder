@@ -12,6 +12,7 @@ same structured output.
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -23,6 +24,10 @@ from integrations._net import require_http_url
 from integrations.gemini import build_prompt
 
 JsonPoster = Callable[[str, bytes, Mapping[str, str], float], str]
+
+# Reasoning models (e.g. qwen3) sometimes prepend a <think>...</think> block to
+# free-form answers; strip it so the summary stays human-readable.
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
 def _urllib_post(
@@ -127,3 +132,29 @@ class OllamaClient:
                     raise
                 errors.append(exc)
         return out
+
+    def complete(self, prompt: str, *, timeout: float | None = None) -> str:
+        """Return the model's free-form text answer to ``prompt`` (no JSON mode).
+
+        Unlike ``identify`` this asks for plain prose (used for log summaries), so
+        it does NOT set ``format=json``. Any ``<think>...</think>`` reasoning block
+        a model emits is stripped. Raises ``IntegrationError`` on a failed request,
+        a bad envelope or an empty answer (consistent with ``identify``).
+        """
+        url = f"{self._base}/api/generate"
+        payload = {
+            "model": self._model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0},
+        }
+        body = json.dumps(payload).encode("utf-8")
+        deadline = self._timeout if timeout is None else timeout
+        try:
+            raw = self._post(url, body, {"content-type": "application/json"}, deadline)
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            raise IntegrationError(f"Ollama request failed: {exc}") from exc
+        text = _THINK_RE.sub("", self._extract_text(raw)).strip()
+        if not text:
+            raise IntegrationError("Ollama completion was empty after stripping reasoning")
+        return text

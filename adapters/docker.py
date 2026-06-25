@@ -81,3 +81,38 @@ def list_containers(
     if not isinstance(parsed, list):
         return []
     return [_parse_container(item) for item in parsed]
+
+
+_LOGS_TIMEOUT = 300.0
+
+
+def _run_logs(argv: Sequence[str]) -> CommandResult:  # pragma: no cover - thin default
+    """Default ``logs`` runner: ``command.run`` with a generous timeout (logs are big)."""
+    return command.run(argv, timeout=_LOGS_TIMEOUT)
+
+
+def container_names(*, runner: Callable[[Sequence[str]], CommandResult] = command.run) -> list[str]:
+    """Names of the currently running containers. Empty list on failure (never raises)."""
+    listing = runner(["docker", "ps", "--format", "{{.Names}}"])
+    if not listing.ok:
+        return []
+    return [n.strip() for n in listing.stdout.splitlines() if n.strip()]
+
+
+def logs(
+    name: str,
+    *,
+    since_days: float,
+    runner: Callable[[Sequence[str]], CommandResult] = _run_logs,
+) -> str:
+    """Combined stdout+stderr of ``name``'s logs since ``since_days`` ago.
+
+    Docker writes most application output to stderr, so both streams are merged.
+    Returns "" on any docker failure; never raises. ``since_days`` is converted to
+    whole hours for ``docker logs --since`` (clamped to at least 1h).
+    """
+    hours = max(1, int(since_days * 24))
+    result = runner(["docker", "logs", "--since", f"{hours}h", "--timestamps", name])
+    if not result.ok and not result.stdout and not result.stderr:
+        return ""
+    return result.stdout + result.stderr

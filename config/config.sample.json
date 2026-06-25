@@ -22,7 +22,9 @@
     "media_root": "/mnt/user/media",
     "movies_root": "/mnt/user/media/Peliculas",
     "series_root": "/mnt/user/media/series TV",
-    "downloads_root": "/mnt/user/Downloads"
+    "downloads_root": "/mnt/user/Downloads",
+    "organizer_source": "/mnt/cache/Downloads/DF/Manuales",
+    "extract_source": "/mnt/cache/Downloads/DF/Manuales"
   },
   "pipelines": {
     "monitor": ["downloads_watchdog", "disk_inventory"],
@@ -39,6 +41,16 @@
       "password_ref": "QBIT_PASSWORD",
       "stalled_hours": 48
     },
-    "tmdb": { "bearer_ref": "TMDB_BEARER_TOKEN" }
+    "tmdb": { "bearer_ref": "TMDB_BEARER_TOKEN" },
+    "ai": { "providers": ["ollama", "gemini"], "escalate_below": 80 },
+    "ollama": { "base_url": "http://192.168.6.62:11434", "model": "qwen3:8b" },
+    "gemini": {
+      "api_key_ref": "GEMINI_API_KEY",
+      "model": "gemini-2.0-flash",
+      "confidence_threshold": 80,
+      "apply": false,
+      "ai_fallback": true
+    },
+    "logwatch": { "days": 3, "containers": [], "max_error_lines": 400 }
   }
 }

@@ -563,6 +563,25 @@ def _ai_providers(ctx: RunContext) -> list[str]:
     return ["gemini"]
 
 
+def _escalate_below(ctx: RunContext) -> float:
+    """Confidence floor below which an AI answer is kept but NOT accepted as final,
+    so the file is ALSO sent to the next provider for a second opinion (e.g. a
+    low-confidence local Ollama guess gets verified by Gemini). We keep whichever
+    answer wins. Default 0 = accept any answer (no escalation, back-compat)."""
+    value = ctx.config.integrations.get("ai", {}).get("escalate_below", 0)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0
+    return float(value)
+
+
+def _conf(entry: dict[str, object]) -> float:
+    """Read an entry's self-reported confidence as a float (0 when absent/bad)."""
+    value = entry.get("confidence", 0)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0
+    return float(value)
+
+
 def _ollama(ctx: RunContext) -> OllamaClient:
     settings = ctx.config.integrations.get("ollama", {})
     base = settings.get("base_url", "http://localhost:11434")
@@ -730,6 +749,12 @@ def run(ctx: RunContext) -> ModuleResult:
             ai_inputs.append(line)
             input_to_rel[line] = rel
             input_to_rel[rel] = rel  # in case the model echoes the bare path
+        # Keep the BEST (highest-confidence) answer per file across providers. An
+        # answer below `escalate_below` is kept but NOT accepted as final, so the
+        # file also flows to the next provider (low-conf Ollama -> Gemini); the
+        # higher-confidence answer wins. escalate_below=0 -> accept any (no dup).
+        best: dict[str, dict[str, object]] = {}
+        escalate_below = _escalate_below(ctx)
         for name in _ai_providers(ctx):
             if not ai_inputs:
                 break
@@ -747,7 +772,7 @@ def run(ctx: RunContext) -> ModuleResult:
                 result.add_failure(
                     FailureRecord(category="integration", message=f"{name}: {batch_exc}")
                 )
-            done: set[str] = set()
+            accepted: set[str] = set()
             for entry in got:
                 echoed = entry.get("filename")
                 mapped: str | None = None
@@ -758,10 +783,13 @@ def run(ctx: RunContext) -> ModuleResult:
                 if mapped is None:
                     continue
                 entry["filename"] = mapped  # normalise to the real relative path
-                raw.append(entry)
-                done.add(mapped)
-            ai_inputs = [ln for ln in ai_inputs if input_to_rel[ln] not in done]
-        unresolved = [input_to_rel[ln] for ln in ai_inputs]
+                if mapped not in best or _conf(entry) > _conf(best[mapped]):
+                    best[mapped] = entry
+                if _conf(entry) >= escalate_below:
+                    accepted.add(mapped)
+            ai_inputs = [ln for ln in ai_inputs if input_to_rel[ln] not in accepted]
+        raw.extend(best.values())
+        unresolved = [input_to_rel[ln] for ln in ai_inputs if input_to_rel[ln] not in best]
 
     # Anything still unresolved -> surface as 'unknown' so it lands in needs_review.
     for rel in unresolved:

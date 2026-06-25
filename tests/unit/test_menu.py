@@ -69,9 +69,10 @@ def test_health_command_runs_health_in_container() -> None:
     assert menu.DOCKER_IMAGE in argv
 
 
-def test_full_maintenance_runs_dupefinder_then_organizer(monkeypatch) -> None:
+def test_full_maintenance_runs_extract_dupes_then_organizer(monkeypatch) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(menu, "_run", lambda argv: calls.append(argv) or 0)
+    monkeypatch.setattr(menu, "ensure_image", lambda: menu.LOCAL_IMAGE)  # no docker build
     monkeypatch.setattr("builtins.input", lambda *a: "s")  # confirm yes
 
     from contextlib import contextmanager
@@ -83,9 +84,10 @@ def test_full_maintenance_runs_dupefinder_then_organizer(monkeypatch) -> None:
     monkeypatch.setattr(menu, "temp_config", _noop)  # don't touch real config files
     menu.action_full_maintenance()
 
-    assert len(calls) == 2
-    assert calls[0][-1].endswith("plex_dupefinder.py")  # duplicates first
-    assert "organizer" in calls[1]  # then organize
+    assert len(calls) == 3
+    assert "extractor" in calls[0]  # extract archives first
+    assert calls[1][-1].endswith("plex_dupefinder.py")  # then duplicates
+    assert "organizer" in calls[2]  # then organize
 
 
 def test_destructive_action_aborts_when_declined(monkeypatch) -> None:

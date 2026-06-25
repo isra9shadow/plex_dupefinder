@@ -114,6 +114,13 @@ def set_izumi_organizer(data, *, live, apply_moves):
     return data
 
 
+def set_izumi_live(data):
+    """Flip the izumi platform into LIVE mode (acts) for one run, leaving the rest
+    of the config untouched. Used by modules that act through core/fs (extractor)."""
+    data.setdefault("safety", {})["mode"] = "live"
+    return data
+
+
 @contextmanager
 def temp_config(path, mutate):
     """Apply ``mutate(copy)`` to the JSON config for the duration of the block,
@@ -186,27 +193,29 @@ def dupefinder_diagnose_command():
     return [sys.executable, os.path.join(ROOT, "plex_dupefinder.py"), "--diagnose-paths"]
 
 
-def _docker_run(*inner, image=DOCKER_IMAGE):
+def _docker_run(*inner, image=DOCKER_IMAGE, user=RUN_AS, extra_args=()):
     """Wrap an izumi entrypoint in a Python 3.12 container (the host Python is too
     old for the platform). Mounts repo + media + cache so paths resolve as
-    configured."""
-    return [
-        "docker",
-        "run",
-        "--rm",
-        "--user",
-        RUN_AS,
+    configured. ``user`` can be set to None to run as root (e.g. logwatch needs
+    access to the root-owned docker socket); ``extra_args`` injects extra docker
+    flags (e.g. an extra volume mount) before the image."""
+    args = ["docker", "run", "--rm"]
+    if user:
+        args += ["--user", user]
+    args += [
         "-v",
         f"{ROOT}:/app",
         "-v",
         "/mnt/user:/mnt/user",
         "-v",
         "/mnt/cache:/mnt/cache",
+        *extra_args,
         "-w",
         "/app",
         image,
         *inner,
     ]
+    return args
 
 
 def organizer_command(*, dry, image=DOCKER_IMAGE):
@@ -215,6 +224,27 @@ def organizer_command(*, dry, image=DOCKER_IMAGE):
     if dry:
         inner.append("--dry-run")
     return _docker_run(*inner, image=image)
+
+
+def extractor_command(*, dry, image=DOCKER_IMAGE):
+    """Argv to run the izumi extractor in a container (optionally --dry-run)."""
+    inner = ["python", "run.py", "extractor"]
+    if dry:
+        inner.append("--dry-run")
+    return _docker_run(*inner, image=image)
+
+
+def logwatch_command(image=DOCKER_IMAGE):
+    """Argv to run the docker-log AI analyst. Runs as root with the docker socket
+    mounted so it can read `docker logs` (read-only; moves/deletes nothing)."""
+    return _docker_run(
+        "python",
+        "run.py",
+        "logwatch",
+        image=image,
+        user=None,
+        extra_args=["-v", "/var/run/docker.sock:/var/run/docker.sock"],
+    )
 
 
 def health_command(image=DOCKER_IMAGE):
@@ -303,13 +333,43 @@ def action_organizer_cleanup_only():
         _organizer_real(apply_moves=False)
 
 
+def action_extract():
+    """Extract finished rar/zip/7z archives; on success the compressed volumes are
+    moved to quarantine (recoverable, NOT rm'd). Incomplete .part downloads are
+    skipped. Requires LIVE mode for the run (restored afterwards)."""
+    if confirm(
+        "Descomprimir rar/zip/7z y mandar los comprimidos a cuarentena si va bien (real). "
+        "¿Continuar?"
+    ):
+        image = ensure_image()
+        with temp_config(IZUMI_CFG, set_izumi_live):
+            _run(extractor_command(dry=False, image=image))
+
+
+def action_logwatch():
+    """Read recent Docker logs, find errors and summarize them with the local AI."""
+    _run(logwatch_command(image=ensure_image()))
+    summary = os.path.join(_izumi_reports_dir(), "logwatch", "summary.md")
+    if os.path.isfile(summary):
+        with open(summary, encoding="utf-8") as fh:
+            print("\n" + fh.read())
+    else:
+        print(_dim(f"\n(no hay resumen todavía en {summary})"))
+
+
 def action_full_maintenance():
-    """Recommended order: remove duplicates first, then clean + organize."""
-    if not confirm("Mantenimiento completo REAL (duplicados → organizar). ¿Continuar?"):
+    """Recommended order: extract archives, remove duplicates, then clean+organize."""
+    if not confirm(
+        "Mantenimiento completo REAL (descomprimir → duplicados → organizar). ¿Continuar?"
+    ):
         return
-    print("\n[1/2] Quitando duplicados (cuarentena real)...")
+    image = ensure_image()
+    print("\n[1/3] Descomprimiendo archivos (cuarentena de comprimidos si va bien)...")
+    with temp_config(IZUMI_CFG, set_izumi_live):
+        _run(extractor_command(dry=False, image=image))
+    print("\n[2/3] Quitando duplicados (cuarentena real)...")
     _run(dupefinder_command())
-    print("\n[2/2] Limpiando basura + organizando ficheros (real)...")
+    print("\n[3/3] Limpiando basura + organizando ficheros (real)...")
     _organizer_real(apply_moves=True)
     print("\nMantenimiento completo terminado.")
 
@@ -417,8 +477,13 @@ MENU = [
     ("Organizar — Ver plan IA (no toca nada)", action_organizer_plan),
     ("Organizar — Limpiar basura + MOVER ficheros (real)", action_organizer_full),
     ("Organizar — Solo limpiar basura (no mueve ficheros)", action_organizer_cleanup_only),
-    ("Mantenimiento completo (orden recomendado: duplicados → organizar)", action_full_maintenance),
+    ("Descomprimir archivos rar/zip/7z + cuarentena (real)", action_extract),
+    (
+        "Mantenimiento completo (orden: descomprimir → duplicados → organizar)",
+        action_full_maintenance,
+    ),
     ("Ver último plan del organizador", action_show_organizer_plan),
+    ("Logs Docker — resumen de errores con IA (últimos días)", action_logwatch),
     ("Configuración (activar/desactivar opciones)", action_config),
     ("Healthcheck de la plataforma", action_health),
     ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),
