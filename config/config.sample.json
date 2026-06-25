@@ -58,6 +58,10 @@
       "max_lines_per_container": 60,
       "max_log_lines": 20000
     },
-    "analyst": { "max_items": 100, "dupefinder_reports": "/mnt/cache/Downloads/DF/REPORTS" }
+    "analyst": {
+      "max_items": 100,
+      "dupefinder_reports": "/mnt/cache/Downloads/DF/REPORTS",
+      "num_ctx": 8192
+    }
   }
 }

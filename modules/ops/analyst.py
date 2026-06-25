@@ -23,6 +23,7 @@ Config (config.json):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
@@ -32,9 +33,13 @@ from aictx import guard, render
 from aictx.builder import PromptBuilder
 from aictx.provider import ContextProvider
 from aictx.providers.capabilities import CapabilitiesContextProvider
+from aictx.providers.history import HistoryContextProvider
+from aictx.providers.inventory import InventoryContextProvider
 from aictx.providers.module import ModuleContextProvider
+from aictx.providers.runtime import RuntimeContextProvider
 from aictx.providers.system import SystemContextProvider
 from aictx.templates import analyst as analyst_template
+from core.cache import SqliteCache
 from core.errors import ConfigError, IntegrationError
 from core.registry import register
 from core.types import FailureRecord, ModuleResult, RunContext
@@ -204,6 +209,38 @@ def _analyst_cfg(ctx: RunContext, key: str, default: int) -> int:
     )
 
 
+def _incident_cache(ctx: RunContext) -> SqliteCache:
+    """Open the incident-memory store (history across runs)."""
+    return SqliteCache(ctx.config.reporting.dir / "cache" / "incidents.db")
+
+
+def _fingerprint(finding: dict[str, object]) -> str:
+    """Stable id for a finding so recurrences collapse (numbers masked)."""
+    title = finding.get("title")
+    norm = _NUM_RE.sub("N", str(title) if isinstance(title, str) else "").strip().lower()
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+
+
+def _record_incidents(cache: SqliteCache, diagnosis: dict[str, object]) -> None:
+    """Persist each finding so future runs don't re-suggest what's known/applied."""
+    findings = diagnosis.get("findings")
+    if not isinstance(findings, list):
+        return
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        severity = finding.get("severity")
+        title = finding.get("title")
+        actions = finding.get("recommended_actions")
+        cache.record_incident(
+            _fingerprint(finding),
+            module="analyst",
+            severity=severity if isinstance(severity, str) else "info",
+            title=title if isinstance(title, str) else "?",
+            recommended=actions if isinstance(actions, list) else [],
+        )
+
+
 def module_body(
     items: list[dict[str, object]], org_stats: dict[str, object], dupe: DupeReport | None
 ) -> str:
@@ -314,26 +351,36 @@ def run(ctx: RunContext) -> ModuleResult:
     if has_data:
         items = needs_review[: _analyst_cfg(ctx, "max_items", _DEFAULT_MAX_ITEMS)]
         num_ctx = _analyst_cfg(ctx, "num_ctx", _DEFAULT_NUM_CTX)
-        providers: list[ContextProvider] = [
-            SystemContextProvider(),
-            CapabilitiesContextProvider(),
-            ModuleContextProvider(
-                "Datos del organizador y del dupefinder", module_body(items, org_stats, dupe)
-            ),
-        ]
-        built = PromptBuilder(num_ctx=num_ctx).build(analyst_template.TEMPLATE, providers)
+        cache = _incident_cache(ctx)
         try:
-            payload = _ollama(ctx).generate_json(
-                built.prompt, built.schema, system=built.system, num_ctx=num_ctx
-            )
-            clean, vetoed = guard.sanitize_payload(payload)
-            diagnosis = clean
-            summary_md = render.render_markdown(clean)
-            if vetoed:
-                note = f"comandos no-Unraid vetados por el guard: {len(vetoed)}"
-        except (ConfigError, IntegrationError) as exc:
-            note = "Ollama no disponible — heuristicas guardadas sin diagnostico IA."
-            result.add_failure(FailureRecord(category="integration", message=f"ollama: {exc}"))
+            history = cache.recent_incidents("analyst")
+            providers: list[ContextProvider] = [
+                SystemContextProvider(),
+                CapabilitiesContextProvider(),
+                InventoryContextProvider(ctx.config.reporting.dir),
+                RuntimeContextProvider(),
+                ModuleContextProvider(
+                    "Datos del organizador y del dupefinder", module_body(items, org_stats, dupe)
+                ),
+                HistoryContextProvider(history),
+            ]
+            built = PromptBuilder(num_ctx=num_ctx).build(analyst_template.TEMPLATE, providers)
+            try:
+                payload = _ollama(ctx).generate_json(
+                    built.prompt, built.schema, system=built.system, num_ctx=num_ctx
+                )
+                clean, vetoed = guard.sanitize_payload(payload)
+                diagnosis = clean
+                summary_md = render.render_markdown(clean)
+                if vetoed:
+                    note = f"comandos no-Unraid vetados por el guard: {len(vetoed)}"
+                _record_incidents(cache, clean)
+                cache.save()
+            except (ConfigError, IntegrationError) as exc:
+                note = "Ollama no disponible — heuristicas guardadas sin diagnostico IA."
+                result.add_failure(FailureRecord(category="integration", message=f"ollama: {exc}"))
+        finally:
+            cache.close()
     else:
         note = "Nada que analizar: el organizador movio todo y no hay skips de duplicados."
 

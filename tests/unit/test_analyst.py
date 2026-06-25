@@ -6,9 +6,24 @@ import json
 from pathlib import Path
 
 import pytest
+from core.cache import SqliteCache
 from core.errors import IntegrationError
 from modules.ops import analyst
 from tests.fakes import make_context
+
+
+class _NullRuntime:
+    """Stub so tests never shell out to docker/nvidia-smi via the real runtime provider."""
+
+    name = "runtime"
+
+    def block(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _no_live_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(analyst, "RuntimeContextProvider", lambda *a, **k: _NullRuntime())
 
 
 def _write_plan(tmp_path: Path, needs_review: list[dict[str, object]]) -> None:
@@ -135,6 +150,12 @@ def test_run_diagnoses_needs_review(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     plan = _read_plan(tmp_path)
     assert plan["organizer"]["total"] == 2
     assert plan["diagnosis"]["findings"][0]["title"] == "Renombrar gr31l@nd"
+    # memory loop: the finding was recorded as an incident for future runs.
+    cache = SqliteCache(tmp_path / "reports" / "cache" / "incidents.db")
+    try:
+        assert len(cache.recent_incidents("analyst")) == 1
+    finally:
+        cache.close()
 
 
 def test_run_includes_dupefinder_skips(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
