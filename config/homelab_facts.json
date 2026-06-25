@@ -1,0 +1,60 @@
+{
+  "os": "Unraid 7",
+  "package_management": "none (no apt/yum/dnf/snap)",
+  "service_management": "Docker integrated in Unraid; NO systemctl/service; NO docker-compose; persistent config under /boot/config and Unraid User Scripts",
+  "hardware": {
+    "gpu": "NVIDIA RTX 4060 (8 GB VRAM)",
+    "ram_gb": 32,
+    "role": "home server"
+  },
+  "paths": {
+    "media": "/mnt/user/media",
+    "cache": "/mnt/cache",
+    "downloads": "/mnt/cache/Downloads/DF",
+    "puid_pgid": "99:100"
+  },
+  "services": [
+    { "name": "Plex", "role": "media server / streaming" },
+    { "name": "Sonarr", "role": "TV series automation/management" },
+    { "name": "Radarr", "role": "movie automation/management" },
+    { "name": "Prowlarr", "role": "indexer manager for the *arr stack" },
+    { "name": "Tdarr", "role": "distributed transcoding/health checks" },
+    { "name": "Immich", "role": "self-hosted photo/video backup" },
+    { "name": "qBittorrent", "role": "BitTorrent download client" },
+    { "name": "Traefik", "role": "reverse proxy / TLS termination" },
+    { "name": "PostgreSQL", "role": "relational database backend" },
+    { "name": "Redis", "role": "in-memory cache/queue backend" },
+    { "name": "Jenkins", "role": "CI / automation server" },
+    { "name": "Ollama", "role": "local LLM inference server" },
+    { "name": "overseerr", "role": "media request management portal" },
+    { "name": "tautulli", "role": "Plex usage monitoring/analytics" },
+    { "name": "autopulse", "role": "automatic library scan triggering" },
+    { "name": "cleanuparr", "role": "cleanup of stalled/orphaned downloads" },
+    { "name": "recyclarr", "role": "sync TRaSH guides into Sonarr/Radarr" },
+    { "name": "configarr", "role": "declarative config sync for the *arr stack" },
+    { "name": "huntarr", "role": "find/upgrade missing media items" },
+    { "name": "pulsarr", "role": "Plex watchlist sync to the *arr stack" },
+    { "name": "jackettvpn", "role": "indexer proxy behind a VPN" },
+    { "name": "flaresolverr", "role": "Cloudflare challenge solver proxy" },
+    { "name": "jdownloader", "role": "direct/HTTP download manager" },
+    { "name": "watchtower", "role": "automatic container image updates" },
+    { "name": "dockge", "role": "container stack management UI" },
+    { "name": "cadvisor", "role": "container resource metrics/monitoring" }
+  ],
+  "forbidden_commands": [
+    "systemctl",
+    "service",
+    "apt",
+    "apt-get",
+    "yum",
+    "dnf",
+    "snap",
+    "docker-compose",
+    "docker compose"
+  ],
+  "constraints": [
+    "Never recommend commands incompatible with Unraid",
+    "Manage containers via the Unraid Docker UI or `docker` CLI",
+    "Edit container config via its appdata under /mnt/cache/appdata or the Unraid template, not docker-compose"
+  ]
+}
