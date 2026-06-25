@@ -500,7 +500,7 @@ MENU = [
         action_full_maintenance,
     ),
     ("Ver último plan del organizador", action_show_organizer_plan),
-    ("Analista IA — logs Docker (última semana) + resultados organizer", action_analyst),
+    ("Analista IA — todo (logs Docker semana + organizer + duplicados)", action_analyst),
     ("Configuración (activar/desactivar opciones)", action_config),
     ("Healthcheck de la plataforma", action_health),
     ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),

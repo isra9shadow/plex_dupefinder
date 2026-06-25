@@ -52,6 +52,6 @@
       "ai_fallback": true
     },
     "logwatch": { "days": 7, "containers": [], "max_error_lines": 400 },
-    "analyst": { "max_items": 100 }
+    "analyst": { "max_items": 100, "dupefinder_reports": "/mnt/cache/Downloads/DF/REPORTS" }
   }
 }

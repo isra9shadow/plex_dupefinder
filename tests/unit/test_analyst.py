@@ -79,7 +79,65 @@ def test_run_summarises_needs_review(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     # Worst (confidence 0) listed first in the prompt.
     assert fake.prompts and fake.prompts[0].index("gr31l@nd") < fake.prompts[0].index("Some Movie")
     assert "renombrar" in _read_summary(tmp_path)
-    assert _read_plan(tmp_path)["stats"]["total"] == 2
+    assert _read_plan(tmp_path)["organizer"]["total"] == 2
+
+
+def test_aggregate_skips_buckets_by_normalized_reason() -> None:
+    groups = [
+        {"title": "A", "discovery_decision": {"skip_reason": "score delta 0 below threshold 1000"}},
+        {
+            "title": "B",
+            "discovery_decision": {"skip_reason": "score delta 50 below threshold 1000"},
+        },
+        {"title": "C", "revalidation": {"reason": "cooldown: 'x' is 2.00h old"}},
+        {"title": "D"},  # no reason -> ignored
+    ]
+    skips, samples = analyst.aggregate_skips(groups)
+    assert skips["score delta N below threshold N"] == 2
+    assert skips["cooldown: 'x' is Nh old"] == 1
+    assert samples["score delta N below threshold N"] == ["A", "B"]
+
+
+def test_run_includes_dupefinder_skips(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_plan(tmp_path, [])  # organizer moved everything
+    reports = tmp_path / "df_reports"
+    reports.mkdir()
+    (reports / "dupefinder_report_abc_20260625T000000Z.json").write_text(
+        json.dumps(
+            {
+                "summary": {"groups_found": 3},
+                "failure_summary": {"PLEX_API_ERROR": 2, "UNKNOWN": 0},
+                "groups": [
+                    {
+                        "title": "A",
+                        "discovery_decision": {"skip_reason": "score delta 0 below threshold 1000"},
+                    },
+                    {
+                        "title": "B",
+                        "discovery_decision": {"skip_reason": "score delta 7 below threshold 1000"},
+                    },
+                    {"title": "C", "revalidation": {"reason": "cooldown: 'c' is 2.00h old"}},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake = _FakeOllama(answer="Duplicados: la mayoria por score delta; bajar umbral.")
+    monkeypatch.setattr(analyst, "OllamaClient", lambda **kw: fake)
+
+    ctx = make_context(
+        tmp_path,
+        integrations={"analyst": {"dupefinder_reports": str(reports)}},
+    )
+    result = analyst.run(ctx)
+
+    assert result.ok
+    assert result.metrics["dupe_skips"] == 3.0
+    assert fake.prompts and "Dupefinder" in fake.prompts[0]
+    plan = _read_plan(tmp_path)
+    assert plan["dupefinder"]["skips"]["score delta N below threshold N"] == 2
+    assert plan["dupefinder"]["failure_summary"] == {"PLEX_API_ERROR": 2}
+    assert "score delta" in _read_summary(tmp_path)
 
 
 def test_run_no_plan_is_config_failure(tmp_path: Path) -> None:
@@ -98,7 +156,7 @@ def test_run_resilient_when_ollama_fails(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
     assert not result.ok  # failure recorded
     assert "Ollama no disponible" in _read_summary(tmp_path)
-    assert _read_plan(tmp_path)["stats"]["total"] == 1  # heuristics still saved
+    assert _read_plan(tmp_path)["organizer"]["total"] == 1  # heuristics still saved
 
 
 def test_run_empty_needs_review_does_not_call_ai(
