@@ -102,6 +102,13 @@ def test_container_names_include_stopped_adds_all_flag() -> None:
     assert captured[0] == ["docker", "ps", "-a", "--format", "{{.Names}}"]
 
 
+def test_probe_returns_version_or_empty() -> None:
+    ok = _runner({"version": CommandResult(("docker", "version"), 0, "27.3.1\n", "")})
+    assert docker.probe(runner=ok) == "27.3.1"
+    bad = _runner({"version": CommandResult(("docker", "version"), 1, "", "cannot connect")})
+    assert docker.probe(runner=bad) == ""
+
+
 def test_logs_tail_caps_output() -> None:
     captured: list[Sequence[str]] = []
 

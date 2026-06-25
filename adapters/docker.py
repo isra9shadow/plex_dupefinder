@@ -107,6 +107,14 @@ def container_names(
     return [n.strip() for n in listing.stdout.splitlines() if n.strip()]
 
 
+def probe(*, runner: Callable[[Sequence[str]], CommandResult] = command.run) -> str:
+    """Return the docker server version, or "" if docker is unreachable from here
+    (binary missing / socket not mounted). Never raises — used to diagnose why a
+    scan found no containers."""
+    result = runner(["docker", "version", "--format", "{{.Server.Version}}"])
+    return result.stdout.strip() if result.ok else ""
+
+
 def logs(
     name: str,
     *,

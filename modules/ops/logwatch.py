@@ -280,7 +280,20 @@ def run(ctx: RunContext) -> ModuleResult:
 
     summary = ""
     note = ""
-    if errors:
+    if not names:
+        # Distinguish "docker unreachable" from "genuinely no containers" so the
+        # operator knows whether it is a setup problem (stale image / socket).
+        if docker.probe():
+            note = "Docker reachable but no containers listed."
+        else:
+            note = (
+                "Docker NOT reachable from the container: the docker client is "
+                "missing from the image or /var/run/docker.sock is not mounted. "
+                "Rebuild the image (the menu rebuilds it when the Dockerfile "
+                "changes; or run: docker rmi izumi-organizer:local)."
+            )
+            result.add_failure(FailureRecord(category="integration", message=note))
+    elif errors:
         try:
             summary = _ollama(ctx).complete(build_prompt(errors, settings.days))
         except (ConfigError, IntegrationError) as exc:

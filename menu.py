@@ -12,10 +12,12 @@ Run it on the host:  python3 menu.py
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 
 ROOT = os.path.dirname(os.path.realpath(__file__))
@@ -258,16 +260,41 @@ def health_command(image=DOCKER_IMAGE):
     return _docker_run("python", "run.py", "health", image=image)
 
 
-def ensure_image():
-    """Return the image to use: the local ffmpeg-enabled one (built on demand),
-    falling back to the plain slim image if it cannot be built (e.g. offline).
-    The ffmpeg image lets the organizer read media metadata for identification."""
-    inspect = subprocess.run(
-        ["docker", "image", "inspect", LOCAL_IMAGE], capture_output=True, text=True
+def _image_created_epoch():
+    """UTC epoch when LOCAL_IMAGE was built, or None if it does not exist."""
+    out = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Created}}", LOCAL_IMAGE],
+        capture_output=True,
+        text=True,
     )
-    if inspect.returncode == 0:
+    if out.returncode != 0:
+        return None
+    try:  # docker prints RFC3339 like 2026-06-25T08:00:00.123456789Z (UTC)
+        return calendar.timegm(time.strptime(out.stdout.strip()[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (ValueError, OverflowError):
+        return 0  # exists but unparseable -> treat as old enough, never rebuild-loop
+
+
+def _image_is_stale(created_epoch):
+    """True if Dockerfile.organizer is newer than the built image (needs rebuild)."""
+    try:
+        return os.path.getmtime(os.path.join(ROOT, "Dockerfile.organizer")) > created_epoch
+    except OSError:
+        return False
+
+
+def ensure_image():
+    """Return the image to use: the local one (ffmpeg + unar + docker client),
+    built on demand and AUTO-REBUILT when Dockerfile.organizer changes (so a
+    pulled Dockerfile update is never silently ignored). Falls back to the plain
+    slim image if it cannot be built (e.g. offline)."""
+    created = _image_created_epoch()
+    if created is not None and not _image_is_stale(created):
         return LOCAL_IMAGE
-    print(_dim("[docker] building local image with ffmpeg (one-time)..."))
+    if created is None:
+        print(_dim("[docker] building local image (ffmpeg + unar + docker client)..."))
+    else:
+        print(_dim("[docker] Dockerfile changed — rebuilding local image..."))
     build = subprocess.run(
         [
             "docker",
@@ -281,7 +308,10 @@ def ensure_image():
     )
     if build.returncode == 0:
         return LOCAL_IMAGE
-    print(_warn("[docker] build failed — using slim image (no ffprobe metadata)."))
+    if created is not None:
+        print(_warn("[docker] rebuild failed — using the existing (older) local image."))
+        return LOCAL_IMAGE
+    print(_warn("[docker] build failed — using slim image (no ffprobe/unar/docker)."))
     return DOCKER_IMAGE
 
 

@@ -157,6 +157,18 @@ def test_run_no_errors_does_not_call_ai(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert "No error lines found" in _read_summary(tmp_path)
 
 
+def test_run_reports_docker_unavailable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(logwatch.docker, "container_names", lambda **kw: [])
+    monkeypatch.setattr(logwatch.docker, "probe", lambda: "")  # docker not reachable
+
+    ctx = make_context(tmp_path)
+    result = logwatch.run(ctx)
+
+    assert not result.ok  # surfaced as a failure, not a silent "0 errors"
+    assert result.metrics["containers"] == 0.0
+    assert "Docker NOT reachable" in _read_summary(tmp_path)
+
+
 def test_dedupe_errors_folds_repeats_with_counts() -> None:
     lines = [
         "2026-06-25T08:00:00Z ERROR db connection refused",
