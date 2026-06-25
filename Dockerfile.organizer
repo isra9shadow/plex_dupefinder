@@ -4,6 +4,9 @@
 #   - unar    : extract zip/rar/7z (incl. multi-volume) for the extractor module
 #   - docker  : static client only, so logwatch can read `docker logs` via the
 #               mounted /var/run/docker.sock (no daemon inside the image)
+#   - jsonschema : aictx validates Ollama structured output (Draft202012Validator);
+#                  imported at module load by integrations.ollama, so it is
+#                  REQUIRED in-container (the rest of the runtime is stdlib/urllib).
 FROM python:3.12-slim
 ARG DOCKER_CLI_VERSION=27.3.1
 RUN apt-get update \
@@ -13,3 +16,4 @@ RUN apt-get update \
     && apt-get purge -y curl \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir "jsonschema>=4.0"

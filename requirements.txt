@@ -1,3 +1,4 @@
 tabulate~=0.8.2
 requests==2.28.1
 PlexAPI==4.13.0
+jsonschema>=4.0  # aictx structured-output validation (Draft202012Validator)
