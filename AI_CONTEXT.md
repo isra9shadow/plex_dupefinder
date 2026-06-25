@@ -31,7 +31,11 @@ ecosystem that **triplicated** dangerous logic; the target is **1 repo · 1 conf
 - `core/` — the spine (config, logging, locks, safety, fs, notify, secrets,
   errors, types, metrics, health). Public API frozen in `core/CONTRACT.md`.
 - `modules/` — one job each, never import each other.
-- `integrations/` — typed API clients (plex, radarr, sonarr, qbittorrent, tmdb, tvmaze).
+- `integrations/` — typed API clients (plex, radarr, sonarr, qbittorrent, tmdb,
+  **gemini**, **ollama**). `_net.require_http_url` guards every base URL.
+- `adapters/` — the audited host-command boundary (the ONLY place that may call
+  `subprocess`): `command` (core runner), `ffprobe`, `docker`, `archive` (unar),
+  `smart`, `blockdev`.
 - `adapters/bash/` — the only bash (newperms, filebot).
 - `config/` config.json + disk_map.json · `.env` secrets · `logs/ reports/ quarantine/`.
 - `tests/` unit/integration/security/smoke/regression · `docs/adr/` decisions.
@@ -41,6 +45,33 @@ ecosystem that **triplicated** dangerous logic; the target is **1 repo · 1 conf
 Receives a `Context` (config, logger, fs, notify, dry_run, run_id). Exposes
 `run(ctx) -> ModuleResult`. Is idempotent, single-instance-locked, report-only
 capable, emits a JSON report fragment + metrics. Never imports another module.
+
+## Media-AI modules (the current focus — read these before touching them)
+
+The post-dedupe media pipeline, all driven from `menu.py` (operator TUI, runs the
+izumi entrypoints inside the `izumi-organizer:local` Docker image — host Python is
+3.9, the platform needs 3.11+):
+
+- **`modules/media/organizer.py`** — cleans junk → quarantine, then identifies the
+  "Manuales" dump and (opt-in `integrations.gemini.apply`) relocates files to
+  Radarr/Sonarr-style paths via `core/fs.relocate`. **Identification cascade**:
+  local regex `parse_media_filename` → AI providers in `integrations.ai.providers`
+  order (`["ollama","gemini"]` recommended; Ollama = local RTX 4060, free; Gemini
+  = quota-limited fallback). An AI answer below `integrations.ai.escalate_below`
+  is kept but re-asked to the next provider (low-conf Ollama → Gemini); best wins.
+  Files are enriched with ffprobe hints; the prompt de-obfuscates leetspeak names.
+  ASCII-only targets, episode titles, tmdbid/tvdbid. Largest files first.
+- **`modules/media/extractor.py`** (`adapters/archive.py`, `unar`) — extracts
+  finished zip/rar/7z (incl. multi-volume); on success the archive set is
+  **quarantined** (never `rm`). Skips incomplete `.part` downloads.
+- **`modules/ops/logwatch.py`** (`adapters/docker.py`, `OllamaClient.complete`) —
+  reads `docker logs`, extracts error lines, Ollama writes a Spanish summary.
+- **`modules/ops/analyst.py`** — reads `reports/organizer/plan.json`, explains
+  with Ollama WHY files landed in `needs_review` and what to do. Read-only.
+
+The two AI clients share `identify(paths, *, errors=None)`; `OllamaClient` also has
+`complete(prompt)` for free-form text. Both reuse `gemini.build_prompt`. CI is
+exact-pinned: **ruff 0.6.9 + mypy 1.11.2** (validate before pushing).
 
 ## The safety gauntlet (applied before any action)
 

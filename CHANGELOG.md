@@ -3,6 +3,31 @@
 All notable changes to the platform. Dates are when work landed; v0.1.0 is the
 first functional release of the new architecture on the proven dedupe engine.
 
+## [0.2.x] — media-AI pipeline (2026-06)
+
+### Added — modules
+- **`organizer`** (`modules/media/organizer.py`): cleans junk → quarantine and
+  identifies the "Manuales" dump into Radarr/Sonarr-style paths (relocate opt-in
+  via `integrations.gemini.apply`). Identification cascade
+  parser → AI providers (`integrations.ai.providers`, recommended
+  `["ollama","gemini"]`) with confidence escalation
+  (`integrations.ai.escalate_below`: low-confidence Ollama → Gemini second
+  opinion). ffprobe metadata hints, leetspeak de-obfuscation, ASCII targets,
+  episode titles, tmdbid/tvdbid, largest-files-first.
+- **`extractor`** (`modules/media/extractor.py`, `adapters/archive.py`): extracts
+  zip/rar/7z incl. multi-volume via `unar`; on success the archive set is
+  quarantined (never `rm` — INVARIANT I1). Skips incomplete `.part` downloads.
+- **`logwatch`** (`modules/ops/logwatch.py`, `adapters/docker.py`): scans recent
+  `docker logs`, extracts error lines, local Ollama writes a Spanish summary.
+- **`analyst`** (`modules/ops/analyst.py`): reads `reports/organizer/plan.json`
+  and explains with Ollama why files stayed in `needs_review`. Read-only.
+
+### Added — integrations & infra
+- `integrations/ollama` (local LLM, free) + `OllamaClient.complete()` for
+  free-form text; shares the Gemini prompt/`identify` interface.
+- `Dockerfile.organizer` gains `unar` + static `docker` CLI; `menu.py` gains
+  extract / analyst / logwatch options and an extract→dupes→organize full run.
+
 ## [0.1.0] — unreleased (functional platform)
 
 ### Added — platform core

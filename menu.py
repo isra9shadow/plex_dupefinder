@@ -234,6 +234,12 @@ def extractor_command(*, dry, image=DOCKER_IMAGE):
     return _docker_run(*inner, image=image)
 
 
+def analyst_command(image=DOCKER_IMAGE):
+    """Argv to run the results analyst (reads the organizer plan, summarizes with
+    the local AI why files were not moved). Read-only."""
+    return _docker_run("python", "run.py", "analyst", image=image)
+
+
 def logwatch_command(image=DOCKER_IMAGE):
     """Argv to run the docker-log AI analyst. Runs as root with the docker socket
     mounted so it can read `docker logs` (read-only; moves/deletes nothing)."""
@@ -344,6 +350,17 @@ def action_extract():
         image = ensure_image()
         with temp_config(IZUMI_CFG, set_izumi_live):
             _run(extractor_command(dry=False, image=image))
+
+
+def action_analyst():
+    """Explain (with the local AI) why the organizer left files in needs_review."""
+    _run(analyst_command(image=ensure_image()))
+    summary = os.path.join(_izumi_reports_dir(), "analyst", "summary.md")
+    if os.path.isfile(summary):
+        with open(summary, encoding="utf-8") as fh:
+            print("\n" + fh.read())
+    else:
+        print(_dim(f"\n(no hay análisis todavía en {summary})"))
 
 
 def action_logwatch():
@@ -483,6 +500,7 @@ MENU = [
         action_full_maintenance,
     ),
     ("Ver último plan del organizador", action_show_organizer_plan),
+    ("Analista IA — por qué no se movieron ficheros (needs_review)", action_analyst),
     ("Logs Docker — resumen de errores con IA (últimos días)", action_logwatch),
     ("Configuración (activar/desactivar opciones)", action_config),
     ("Healthcheck de la plataforma", action_health),
