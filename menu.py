@@ -260,6 +260,11 @@ def health_command(image=DOCKER_IMAGE):
     return _docker_run("python", "run.py", "health", image=image)
 
 
+def bot_command():
+    """Argv to run the Telegram operations bot in the foreground (host)."""
+    return [sys.executable, os.path.join(ROOT, "bot.py")]
+
+
 def _image_created_epoch():
     """UTC epoch when LOCAL_IMAGE was built, or None if it does not exist."""
     out = subprocess.run(
@@ -425,6 +430,14 @@ def action_health():
     _run(health_command(image=ensure_image()))
 
 
+def action_bot():
+    """Start the Telegram operations bot (foreground; Ctrl-C to stop). Lets you
+    launch the same operations remotely. Reads its token + allowed chat id(s)
+    from .env (IZUMI_TELEGRAM_BOT_TOKEN / IZUMI_TELEGRAM_CHAT_ID)."""
+    print(_dim("Iniciando bot de Telegram (Ctrl-C para parar)..."))
+    _run(bot_command())
+
+
 def action_show_organizer_plan():
     plan = os.path.join(_izumi_reports_dir(), "organizer", "plan.md")
     if os.path.isfile(plan):
@@ -534,6 +547,7 @@ MENU = [
     ("Configuración (activar/desactivar opciones)", action_config),
     ("Healthcheck de la plataforma", action_health),
     ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),
+    ("Bot de Telegram (lanzar ejecuciones por chat)", action_bot),
 ]
 
 
