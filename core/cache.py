@@ -73,6 +73,21 @@ def _utcnow() -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class Incident:
+    """One recorded incident. ``recommended``/``applied`` are parsed JSON lists."""
+
+    fingerprint: str
+    module: str
+    severity: str
+    title: str
+    first_seen: float
+    last_seen: float
+    status: str
+    recommended: list[object]
+    applied: list[object]
+
+
+@dataclass(frozen=True, slots=True)
 class MediaRecord:
     """One cached media file. ``extra`` is the parsed JSON blob (or None)."""
 
@@ -113,6 +128,18 @@ class SqliteCache:
         # Cross-run discovery/probe metrics history (observability).
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS runs (run_id TEXT, ts TEXT NOT NULL, metrics TEXT)"
+        )
+        # Incident memory: recurring problems + the actions already applied, so the
+        # AI context layer can avoid re-recommending resolved/applied fixes.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS incidents ("
+            "fingerprint TEXT PRIMARY KEY, module TEXT, severity TEXT, title TEXT, "
+            "first_seen REAL, last_seen REAL, status TEXT, recommended TEXT, applied TEXT)"
+        )
+        # recent_incidents() filters by module and orders by last_seen — index both.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_incidents_module_last_seen "
+            "ON incidents(module, last_seen)"
         )
         self._conn.commit()
         self._dirty = False
@@ -253,6 +280,94 @@ class SqliteCache:
                 }
             )
         return out
+
+    def record_incident(
+        self,
+        fingerprint: str,
+        *,
+        module: str,
+        severity: str,
+        title: str,
+        recommended: Iterable[object],
+    ) -> None:
+        """Upsert an incident: insert as open on first sight, else refresh it.
+
+        On conflict we bump ``last_seen``, overwrite severity/title with the latest
+        observation and merge ``recommended`` (union, order-preserving) so newly
+        suggested actions accumulate without losing prior ones.
+        """
+        now = datetime.now(UTC).timestamp()
+        recommended_list = list(recommended)
+        existing = self._conn.execute(
+            "SELECT recommended FROM incidents WHERE fingerprint = ?",
+            (fingerprint,),
+        ).fetchone()
+        if existing is None:
+            self._conn.execute(
+                "INSERT INTO incidents "
+                "(fingerprint, module, severity, title, first_seen, last_seen, "
+                "status, recommended, applied) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)",
+                (
+                    fingerprint,
+                    module,
+                    severity,
+                    title,
+                    now,
+                    now,
+                    json.dumps(recommended_list),
+                    json.dumps([]),
+                ),
+            )
+        else:
+            prior = json.loads(existing[0]) if existing[0] else []
+            prior_list = prior if isinstance(prior, list) else []
+            merged = list(prior_list)
+            for item in recommended_list:
+                if item not in merged:
+                    merged.append(item)
+            self._conn.execute(
+                "UPDATE incidents "
+                "SET module = ?, severity = ?, title = ?, last_seen = ?, recommended = ? "
+                "WHERE fingerprint = ?",
+                (module, severity, title, now, json.dumps(merged), fingerprint),
+            )
+        self._dirty = True
+
+    def recent_incidents(self, module: str, *, limit: int = 20) -> list[Incident]:
+        """Incidents for ``module``, newest ``last_seen`` first (capped by ``limit``)."""
+        rows = self._conn.execute(
+            "SELECT fingerprint, module, severity, title, first_seen, last_seen, "
+            "status, recommended, applied FROM incidents "
+            "WHERE module = ? ORDER BY last_seen DESC LIMIT ?",
+            (module, limit),
+        ).fetchall()
+        incidents: list[Incident] = []
+        for row in rows:
+            recommended = json.loads(row[7]) if row[7] else []
+            applied = json.loads(row[8]) if row[8] else []
+            incidents.append(
+                Incident(
+                    fingerprint=row[0],
+                    module=row[1],
+                    severity=row[2],
+                    title=row[3],
+                    first_seen=row[4],
+                    last_seen=row[5],
+                    status=row[6],
+                    recommended=recommended if isinstance(recommended, list) else [],
+                    applied=applied if isinstance(applied, list) else [],
+                )
+            )
+        return incidents
+
+    def resolve_incident(self, fingerprint: str, *, applied: Iterable[object]) -> None:
+        """Mark an incident resolved and record the actions that were applied."""
+        self._conn.execute(
+            "UPDATE incidents SET status = 'resolved', applied = ? WHERE fingerprint = ?",
+            (json.dumps(list(applied)), fingerprint),
+        )
+        self._dirty = True
 
     def save(self) -> None:
         if self._dirty:
