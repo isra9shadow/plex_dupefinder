@@ -6,7 +6,7 @@
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-src = ["core", "modules", "integrations", "adapters", "tests"]
+src = ["core", "modules", "integrations", "adapters", "aictx", "tests"]
 extend-exclude = [
     "plex_dupefinder.py",
     "config.py",
@@ -39,9 +39,13 @@ ignore = []
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["core", "adapters", "integrations", "modules", "run.py"]
+files = ["core", "adapters", "integrations", "modules", "aictx", "run.py"]
 # Legacy untyped modules are not part of the platform yet.
 exclude = "(^|/)(plex_dupefinder|config)\\.py$|^tools/"
+
+[[tool.mypy.overrides]]
+module = "jsonschema.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 # Platform suites + the legacy-engine regression suite (tests/regression), which
