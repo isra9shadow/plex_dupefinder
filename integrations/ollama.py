@@ -19,6 +19,7 @@ import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 
 from core.errors import IntegrationError
+from jsonschema import Draft202012Validator
 
 from integrations._net import require_http_url
 from integrations.gemini import build_prompt
@@ -158,3 +159,77 @@ class OllamaClient:
         if not text:
             raise IntegrationError("Ollama completion was empty after stripping reasoning")
         return text
+
+    def generate_json(
+        self,
+        prompt: str,
+        schema: dict[str, object],
+        *,
+        system: str | None = None,
+        num_ctx: int | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, object]:
+        """Return a schema-validated JSON object from the model (structured output).
+
+        Uses Ollama's structured-output mode by passing the JSON ``schema`` as the
+        ``format`` field. The response is parsed and validated against ``schema``
+        with ``Draft202012Validator``; on a parse/validation failure the request is
+        retried exactly once with a short repair instruction appended to the prompt.
+        Any ``<think>...</think>`` reasoning block is stripped before parsing.
+        Raises ``IntegrationError`` on a failed request or if validation still
+        fails after the retry.
+        """
+        deadline = self._timeout if timeout is None else timeout
+        parsed, errors = self._attempt_json(
+            prompt, schema, system=system, num_ctx=num_ctx, timeout=deadline
+        )
+        if parsed is not None:
+            return parsed
+        repair = f"\n\nDevuelve SOLO JSON valido que cumpla el esquema; corrige: {errors}"
+        parsed, errors = self._attempt_json(
+            prompt + repair, schema, system=system, num_ctx=num_ctx, timeout=deadline
+        )
+        if parsed is not None:
+            return parsed
+        raise IntegrationError(f"Ollama JSON did not satisfy schema: {errors}")
+
+    def _attempt_json(
+        self,
+        prompt: str,
+        schema: dict[str, object],
+        *,
+        system: str | None,
+        num_ctx: int | None,
+        timeout: float,
+    ) -> tuple[dict[str, object] | None, str]:
+        """Post once and try to parse+validate; return (data, "") or (None, errors)."""
+        url = f"{self._base}/api/generate"
+        options: dict[str, object] = {"temperature": 0}
+        if num_ctx:
+            options["num_ctx"] = num_ctx
+        payload: dict[str, object] = {
+            "model": self._model,
+            "prompt": prompt,
+            "stream": False,
+            "format": schema,
+            "options": options,
+        }
+        if system is not None:
+            payload["system"] = system
+        body = json.dumps(payload).encode("utf-8")
+        try:
+            raw = self._post(url, body, {"content-type": "application/json"}, timeout)
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            raise IntegrationError(f"Ollama request failed: {exc}") from exc
+        text = _THINK_RE.sub("", self._extract_text(raw)).strip()
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            return None, f"invalid JSON: {exc}"
+        if not isinstance(parsed, dict):
+            return None, "payload must be a JSON object"
+        validator = Draft202012Validator(schema)
+        validation = [e.message for e in validator.iter_errors(parsed)]
+        if validation:
+            return None, "; ".join(validation)
+        return _as_dict(parsed), ""
