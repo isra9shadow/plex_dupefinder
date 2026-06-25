@@ -12,7 +12,8 @@ _INSPECT = [
     {
         "Name": "/Plex",
         "Config": {"Image": "linuxserver/plex"},
-        "State": {"Status": "running"},
+        "State": {"Status": "running", "StartedAt": "2026-06-25T10:00:00Z"},
+        "RestartCount": 3,
         "Mounts": [{"Source": "/mnt/user/media", "Destination": "/data"}],
         "NetworkSettings": {
             "Ports": {"32400/tcp": [{"HostPort": "32400"}]},
@@ -45,6 +46,8 @@ def test_list_containers_parses() -> None:
     assert c.ports == ["32400->32400/tcp"]
     assert c.networks == ["proxy"]
     assert c.mounts == ["/mnt/user/media:/data"]
+    assert c.restart_count == 3
+    assert c.started_at == "2026-06-25T10:00:00Z"
 
 
 def test_empty_when_ps_fails() -> None:
