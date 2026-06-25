@@ -90,6 +90,29 @@ def test_container_names_empty_on_failure() -> None:
     assert docker.container_names(runner=runner) == []
 
 
+def test_container_names_include_stopped_adds_all_flag() -> None:
+    captured: list[Sequence[str]] = []
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        captured.append(argv)
+        return CommandResult(tuple(argv), 0, "Plex\nOld\n", "")
+
+    names = docker.container_names(include_stopped=True, runner=runner)
+    assert names == ["Plex", "Old"]
+    assert captured[0] == ["docker", "ps", "-a", "--format", "{{.Names}}"]
+
+
+def test_logs_tail_caps_output() -> None:
+    captured: list[Sequence[str]] = []
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        captured.append(argv)
+        return CommandResult(tuple(argv), 0, "x\n", "")
+
+    docker.logs("Plex", since_days=7.0, tail=20000, runner=runner)
+    assert "--tail" in list(captured[0]) and "20000" in list(captured[0])
+
+
 def test_logs_merges_stdout_and_stderr() -> None:
     captured: list[Sequence[str]] = []
 

@@ -230,10 +230,18 @@ def build_prompt(
             "",
         ]
     parts += [
-        "Para cada problema agrupa por CAUSA probable y da una ACCION concreta "
-        "(bajar el umbral de confianza, anadir patron al parser, refrescar metadata "
-        "en Plex, renombrar a mano, revisar permisos, ignorar...). Usa vinetas y "
-        "prioriza lo que mas ficheros/duplicados desbloquea. Se conciso.",
+        "CONTEXTO IMPORTANTE: NO existe carpeta de 'revision manual'. Un fichero "
+        "que no se identifica con confianza simplemente SE QUEDA DONDE ESTA (no se "
+        "mueve a ningun sitio). Por tanto NO recomiendes 'mover a carpeta de "
+        "revision'. Tampoco recomiendes bajar el umbral a valores muy bajos "
+        "(10-20%): movería ficheros mal identificados.",
+        "",
+        "Para cada problema agrupa por CAUSA probable y da una ACCION concreta y "
+        "REALISTA: mejorar la identificacion (anadir patron al parser, asegurar que "
+        "la IA/Gemini se ejecuta), refrescar metadata en Plex, renombrar el fichero "
+        "a mano, revisar permisos, o ACEPTAR/IGNORAR (p.ej. videos caseros "
+        "'video_AAAA-MM-DD' o clips que deben quedarse donde estan). Usa vinetas y "
+        "prioriza lo que mas ficheros/duplicados desbloquea de verdad. Se conciso.",
     ]
     return "\n".join(parts)
 

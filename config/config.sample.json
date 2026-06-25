@@ -51,7 +51,13 @@
       "apply": false,
       "ai_fallback": true
     },
-    "logwatch": { "days": 7, "containers": [], "max_error_lines": 400 },
+    "logwatch": {
+      "days": 7,
+      "containers": [],
+      "max_error_lines": 400,
+      "max_lines_per_container": 60,
+      "max_log_lines": 20000
+    },
     "analyst": { "max_items": 100, "dupefinder_reports": "/mnt/cache/Downloads/DF/REPORTS" }
   }
 }

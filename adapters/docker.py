@@ -91,9 +91,17 @@ def _run_logs(argv: Sequence[str]) -> CommandResult:  # pragma: no cover - thin 
     return command.run(argv, timeout=_LOGS_TIMEOUT)
 
 
-def container_names(*, runner: Callable[[Sequence[str]], CommandResult] = command.run) -> list[str]:
-    """Names of the currently running containers. Empty list on failure (never raises)."""
-    listing = runner(["docker", "ps", "--format", "{{.Names}}"])
+def container_names(
+    *,
+    include_stopped: bool = False,
+    runner: Callable[[Sequence[str]], CommandResult] = command.run,
+) -> list[str]:
+    """Container names. ``include_stopped`` adds ``-a`` (running + exited/crashed —
+    where errors often live). Empty list on any docker failure (never raises)."""
+    argv = ["docker", "ps", "--format", "{{.Names}}"]
+    if include_stopped:
+        argv.insert(2, "-a")
+    listing = runner(argv)
     if not listing.ok:
         return []
     return [n.strip() for n in listing.stdout.splitlines() if n.strip()]
@@ -103,16 +111,22 @@ def logs(
     name: str,
     *,
     since_days: float,
+    tail: int = 0,
     runner: Callable[[Sequence[str]], CommandResult] = _run_logs,
 ) -> str:
     """Combined stdout+stderr of ``name``'s logs since ``since_days`` ago.
 
     Docker writes most application output to stderr, so both streams are merged.
     Returns "" on any docker failure; never raises. ``since_days`` is converted to
-    whole hours for ``docker logs --since`` (clamped to at least 1h).
+    whole hours for ``docker logs --since`` (clamped to at least 1h). ``tail`` > 0
+    also caps the output to the last N lines (bounds a week of huge logs).
     """
     hours = max(1, int(since_days * 24))
-    result = runner(["docker", "logs", "--since", f"{hours}h", "--timestamps", name])
+    argv = ["docker", "logs", "--since", f"{hours}h", "--timestamps"]
+    if tail > 0:
+        argv += ["--tail", str(tail)]
+    argv.append(name)
+    result = runner(argv)
     if not result.ok and not result.stdout and not result.stderr:
         return ""
     return result.stdout + result.stderr

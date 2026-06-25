@@ -61,8 +61,10 @@ def test_cap_recent_keeps_most_recent() -> None:
 def _patch_docker(
     monkeypatch: pytest.MonkeyPatch, *, names: list[str], logs: dict[str, str]
 ) -> None:
-    monkeypatch.setattr(logwatch.docker, "container_names", lambda: list(names))
-    monkeypatch.setattr(logwatch.docker, "logs", lambda name, *, since_days: logs.get(name, ""))
+    monkeypatch.setattr(logwatch.docker, "container_names", lambda **kw: list(names))
+    monkeypatch.setattr(
+        logwatch.docker, "logs", lambda name, *, since_days, tail=0: logs.get(name, "")
+    )
 
 
 class _FakeOllama:
@@ -155,12 +157,38 @@ def test_run_no_errors_does_not_call_ai(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert "No error lines found" in _read_summary(tmp_path)
 
 
+def test_dedupe_errors_folds_repeats_with_counts() -> None:
+    lines = [
+        "2026-06-25T08:00:00Z ERROR db connection refused",
+        "2026-06-25T08:00:01Z ERROR db connection refused",
+        "2026-06-25T08:00:02Z ERROR db connection refused",
+        "2026-06-25T09:00:00Z WARN disk almost full",
+    ]
+    out = logwatch.dedupe_errors(lines, limit=10)
+    # timestamps stripped, repeats folded with a count, most frequent first.
+    assert out[0] == "ERROR db connection refused  (x3)"
+    assert "WARN disk almost full" in out
+    assert len(out) == 2
+
+
+def test_dedupe_errors_respects_limit() -> None:
+    # distinct text (not digits — _norm masks numbers, which would collapse them).
+    lines = [f"ERROR distinct {chr(97 + i)}" for i in range(20)]
+    assert len(logwatch.dedupe_errors(lines, limit=5)) == 5
+
+
+def test_extract_errors_matches_structured_logs() -> None:
+    logs = "ok line\nts level=error something broke\nts [ERR] boom\nts unable to connect\n"
+    found = logwatch.extract_errors(logs)
+    assert len(found) == 3  # level=error, [ERR], unable to
+
+
 def test_run_one_container_log_failure_is_recorded(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(logwatch.docker, "container_names", lambda: ["Plex", "Bad"])
+    monkeypatch.setattr(logwatch.docker, "container_names", lambda **kw: ["Plex", "Bad"])
 
-    def fake_logs(name: str, *, since_days: float) -> str:
+    def fake_logs(name: str, *, since_days: float, tail: int = 0) -> str:
         if name == "Bad":
             raise RuntimeError("docker exploded")
         return "ERROR plex problem\n"
