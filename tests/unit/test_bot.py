@@ -70,6 +70,28 @@ def test_decide_cancel_and_unknown() -> None:
     assert bot.decide(message_text="hello there", authorized=True).kind == "unknown"
 
 
+# --- apply routing -------------------------------------------------------------
+
+
+def test_decide_apply_lists() -> None:
+    assert bot.decide(message_text="/apply", authorized=True).kind == "apply_list"
+
+
+def test_decide_apply_callbacks() -> None:
+    confirm = bot.decide(callback_data="apply:2", authorized=True)
+    assert confirm.kind == "apply_confirm" and confirm.action == "2"
+    run = bot.decide(callback_data="doapply:2", authorized=True)
+    assert run.kind == "apply_run" and run.action == "2"
+
+
+def test_action_at_is_bounds_and_parse_safe() -> None:
+    actions = ["a", "b", "c"]
+    assert bot._action_at(actions, "1") == "b"
+    assert bot._action_at(actions, "9") is None
+    assert bot._action_at(actions, "x") is None
+    assert bot._action_at([], "0") is None
+
+
 # --- keyboards -----------------------------------------------------------------
 
 
@@ -81,6 +103,24 @@ def test_main_keyboard_has_a_button_per_action() -> None:
     # destructive actions are flagged with a warning glyph
     organize = next(b for b in buttons if b["callback_data"] == "act:organize")
     assert organize["text"].startswith("⚠️")
+
+
+def test_apply_list_keyboard_has_a_button_per_action() -> None:
+    from aictx.apply import ApplyAction
+
+    actions = [
+        ApplyAction("docker restart radarr", "docker-lifecycle", "t", "f", "error"),
+        ApplyAction("chmod 600 /a", "chmod", "t2", "g", "warning"),
+    ]
+    kb = bot.apply_list_keyboard(actions)
+    buttons = [b for row in kb["inline_keyboard"] for b in row]
+    assert [b["callback_data"] for b in buttons] == ["apply:0", "apply:1"]
+
+
+def test_apply_confirm_keyboard_offers_apply_and_cancel() -> None:
+    kb = bot.apply_confirm_keyboard("3")
+    flat = {b["callback_data"] for row in kb["inline_keyboard"] for b in row}
+    assert flat == {"doapply:3", "cancel"}
 
 
 def test_confirm_keyboard_offers_confirm_and_cancel() -> None:

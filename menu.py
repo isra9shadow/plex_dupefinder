@@ -19,6 +19,10 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from pathlib import Path
+
+from aictx.apply import apply_action, collect_actions, default_runner
+from core.cache import SqliteCache
 
 ROOT = os.path.dirname(os.path.realpath(__file__))
 LEGACY_CFG = os.path.join(ROOT, "config.json")
@@ -409,6 +413,64 @@ def action_analyst():
     _show_report("analyst", "Resultados organizer (IA)")
 
 
+def _ai_plan_paths():
+    """The module plan.json files that carry an AI diagnosis (logwatch + analyst)."""
+    reports = _izumi_reports_dir()
+    return [Path(reports) / sub / "plan.json" for sub in ("logwatch", "analyst")]
+
+
+def _mark_applied(actions):
+    """Mark each applied action's incident resolved so the AI stops re-suggesting it."""
+    try:
+        cache = SqliteCache(Path(_izumi_reports_dir()) / "cache" / "incidents.db")
+    except Exception:  # the memory loop is best-effort; never block applying
+        return
+    try:
+        for action in actions:
+            cache.resolve_incident(action.fingerprint, applied=[action.command])
+        cache.save()
+    finally:
+        cache.close()
+
+
+def action_apply_solutions():
+    """Apply the AI-proposed fixes, confirming each one (allow-list + guard).
+
+    Reads the latest analyst/logwatch diagnoses and offers ONLY the commands that
+    are safe to apply (docker restart/start/stop, docker logs, chmod, chown,
+    mkdir). Each runs only after you confirm; destructive ops are never offered
+    (they go through quarantine). Applied fixes are marked resolved in memory."""
+    actions = collect_actions(_ai_plan_paths())
+    if not actions:
+        print(_dim("\n(no hay acciones aplicables; lanza antes el Analista IA — opción 9)"))
+        return
+    print("\n" + _title("Soluciones IA aplicables") + "\n" + _dim("─" * _W))
+    for i, action in enumerate(actions, start=1):
+        print(f"  {_c('96', f'{i:>2}')}) [{action.severity}] {_ok(action.command)}")
+        print(f"      {_dim(action.finding_title)}")
+    print(_dim("─" * _W))
+    print(_dim("Se aplican una a una, confirmando cada una.\n"))
+    applied = []
+    for action in actions:
+        if not confirm(f"Aplicar: {action.command} ?"):
+            continue
+        print("\n" + _dim("$ " + action.command))
+        outcome = apply_action(action, runner=default_runner)
+        if outcome.ok:
+            print(_ok("OK (rc=0)"))
+            applied.append(action)
+        elif outcome.ran:
+            print(_danger(f"Falló (rc={outcome.returncode})"))
+        else:
+            print(_danger(f"No aplicado: {outcome.error}"))
+        body = outcome.output.strip()
+        if body:
+            print(body[:2000])
+    if applied:
+        _mark_applied(applied)
+        print(_ok(f"\n{len(applied)} acción(es) aplicada(s) y marcada(s) como resueltas."))
+
+
 def action_full_maintenance():
     """Recommended order: extract archives, remove duplicates, then clean+organize."""
     if not confirm(
@@ -544,6 +606,7 @@ MENU = [
     ),
     ("Ver último plan del organizador", action_show_organizer_plan),
     ("Analista IA — todo (logs Docker semana + organizer + duplicados)", action_analyst),
+    ("Aplicar soluciones IA (con confirmación)", action_apply_solutions),
     ("Configuración (activar/desactivar opciones)", action_config),
     ("Healthcheck de la plataforma", action_health),
     ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),

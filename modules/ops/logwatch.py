@@ -33,13 +33,13 @@ Config (config.json):
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import dataclass
 
 from adapters import docker
 from aictx import guard, render
+from aictx.apply import finding_fingerprint
 from aictx.builder import PromptBuilder
 from aictx.provider import ContextProvider
 from aictx.providers.capabilities import CapabilitiesContextProvider
@@ -208,8 +208,7 @@ def _incident_cache(ctx: RunContext) -> SqliteCache:
 def _fingerprint(finding: dict[str, object]) -> str:
     """Stable id for a finding so recurrences collapse (numbers masked)."""
     title = finding.get("title")
-    norm = _NUM_RE.sub("N", str(title) if isinstance(title, str) else "").strip().lower()
-    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+    return finding_fingerprint(title if isinstance(title, str) else "")
 
 
 def _record_incidents(cache: SqliteCache, diagnosis: dict[str, object]) -> None:

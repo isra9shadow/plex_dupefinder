@@ -13,6 +13,8 @@ Security:
     (env / ``.env``). Messages from any chat that is NOT in the allow-list are
     silently ignored (so the bot's existence is not leaked to strangers).
   * Destructive actions (real quarantine moves) require a "Confirmar" tap.
+  * ``/apply`` runs AI-proposed fixes through ``aictx.apply`` (positive allow-list
+    + guard), and only after a per-command "Aplicar" confirmation tap.
 
 Run on the host:  python3 bot.py
 """
@@ -27,8 +29,11 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 import menu
+from aictx.apply import apply_action, collect_actions, default_runner
+from core.cache import SqliteCache
 from core.secrets import get_secret
 
 _API = "https://api.telegram.org/bot{token}/{method}"
@@ -36,6 +41,7 @@ _POLL_TIMEOUT = 50  # Telegram long-poll seconds
 _HTTP_TIMEOUT = _POLL_TIMEOUT + 15  # urllib timeout must outlast the long-poll
 _MSG_LIMIT = 3500  # stay under Telegram's 4096-char hard cap, with margin
 _RUN_LOCK = threading.Lock()  # only ONE execution at a time across all chats
+_PENDING_APPLY: dict[int, list] = {}  # chat_id -> list[ApplyAction] offered by /apply
 
 
 # --- action catalogue (mirrors the menu) ---------------------------------------
@@ -88,6 +94,7 @@ HELP_TEXT = (
     "/dupes_real — mover duplicados a cuarentena (real)\n"
     "/maintenance — todo: descomprimir → duplicados → organizar (real)\n"
     "/health — healthcheck\n"
+    "/apply — aplicar soluciones IA (allow-list segura, con confirmación)\n"
     "/status — estado del bot\n\n"
     "Las acciones REALES piden confirmación antes de ejecutarse."
 )
@@ -124,8 +131,10 @@ def command_for(text):
 
 @dataclass(frozen=True)
 class Decision:
-    kind: str  # deny | help | status | run | confirm | cancel | unknown
-    action: str = ""  # action key when kind in {run, confirm}
+    # deny | help | status | run | confirm | cancel | unknown
+    # | apply_list | apply_confirm | apply_run
+    kind: str
+    action: str = ""  # action key (run/confirm) or action index (apply_confirm/apply_run)
 
 
 def decide(*, message_text=None, callback_data=None, authorized):
@@ -140,6 +149,10 @@ def decide(*, message_text=None, callback_data=None, authorized):
             return Decision("confirm" if ACTIONS[key].destructive else "run", key)
         if verb == "confirm" and key in ACTIONS:
             return Decision("run", key)
+        if verb == "apply":  # tap an applicable AI action -> ask confirmation
+            return Decision("apply_confirm", key)
+        if verb == "doapply":  # confirmed -> run it
+            return Decision("apply_run", key)
         return Decision("unknown")
     text = (message_text or "").strip()
     first = text.split()[0].lower().split("@", 1)[0] if text else ""
@@ -147,10 +160,21 @@ def decide(*, message_text=None, callback_data=None, authorized):
         return Decision("help")
     if first == "/status":
         return Decision("status")
+    if first == "/apply":
+        return Decision("apply_list")
     key = command_for(text)
     if key:
         return Decision("confirm" if ACTIONS[key].destructive else "run", key)
     return Decision("unknown")
+
+
+def _action_at(actions, index_str):
+    """Return ``actions[int(index_str)]`` or None (parse/bounds-safe)."""
+    try:
+        idx = int(index_str)
+    except (TypeError, ValueError):
+        return None
+    return actions[idx] if 0 <= idx < len(actions) else None
 
 
 def main_keyboard():
@@ -167,6 +191,26 @@ def confirm_keyboard(key):
         "inline_keyboard": [
             [
                 {"text": "✅ Confirmar", "callback_data": f"confirm:{key}"},
+                {"text": "✖️ Cancelar", "callback_data": "cancel"},
+            ]
+        ]
+    }
+
+
+def apply_list_keyboard(actions):
+    """One button per applicable AI action (callback ``apply:<index>``)."""
+    rows = [
+        [{"text": f"▶ {action.command}"[:60], "callback_data": f"apply:{index}"}]
+        for index, action in enumerate(actions)
+    ]
+    return {"inline_keyboard": rows}
+
+
+def apply_confirm_keyboard(index):
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Aplicar", "callback_data": f"doapply:{index}"},
                 {"text": "✖️ Cancelar", "callback_data": "cancel"},
             ]
         ]
@@ -325,6 +369,50 @@ def run_action(token, chat_id, key):
         _RUN_LOCK.release()
 
 
+# --- apply layer (operator-confirmed AI fixes; allow-list + guard) --------------
+
+
+def _apply_plan_paths():
+    """The module plan.json files that carry an AI diagnosis (logwatch + analyst)."""
+    reports = menu._izumi_reports_dir()
+    return [Path(reports) / sub / "plan.json" for sub in ("logwatch", "analyst")]
+
+
+def _mark_applied(action):
+    """Best-effort: mark the applied action's incident resolved (memory loop)."""
+    try:
+        cache = SqliteCache(Path(menu._izumi_reports_dir()) / "cache" / "incidents.db")
+    except Exception:
+        return
+    try:
+        cache.resolve_incident(action.fingerprint, applied=[action.command])
+        cache.save()
+    finally:
+        cache.close()
+
+
+def run_apply(token, chat_id, action):
+    """Worker (thread): apply ONE confirmed AI action (re-vetted) and report."""
+    if not _RUN_LOCK.acquire(blocking=False):
+        send_message(token, chat_id, "⏳ Ya hay una ejecución en curso. Espera a que termine.")
+        return
+    try:
+        send_message(token, chat_id, f"🔧 Aplicando: {action.command}")
+        outcome = apply_action(action, runner=default_runner)
+        if not outcome.ran:
+            send_message(token, chat_id, f"🚫 No aplicado: {outcome.error}")
+            return
+        if outcome.ok:
+            _mark_applied(action)
+        send_message(
+            token, chat_id, format_result(action.command, outcome.returncode, outcome.output)
+        )
+    except Exception as exc:  # a failed apply must never kill the bot
+        send_message(token, chat_id, f"❌ Error aplicando {action.command}: {exc}")
+    finally:
+        _RUN_LOCK.release()
+
+
 # --- dispatch + serve loop ------------------------------------------------------
 
 
@@ -354,6 +442,37 @@ def _dispatch(decision, token, chat_id):
         threading.Thread(
             target=run_action, args=(token, chat_id, decision.action), daemon=True
         ).start()
+    elif decision.kind == "apply_list":
+        actions = collect_actions(_apply_plan_paths())
+        _PENDING_APPLY[chat_id] = actions
+        if not actions:
+            send_message(token, chat_id, "No hay soluciones IA aplicables. Lanza antes /analyst.")
+        else:
+            lines = [f"{i + 1}. [{a.severity}] {a.command}" for i, a in enumerate(actions)]
+            send_message(
+                token,
+                chat_id,
+                "🛠️ Soluciones IA aplicables (pulsa una; pedirá confirmación):\n\n"
+                + "\n".join(lines),
+                keyboard=apply_list_keyboard(actions),
+            )
+    elif decision.kind == "apply_confirm":
+        action = _action_at(_PENDING_APPLY.get(chat_id, []), decision.action)
+        if action is None:
+            send_message(token, chat_id, "Esa acción ya no está disponible. Usa /apply de nuevo.")
+        else:
+            send_message(
+                token,
+                chat_id,
+                f"⚠️ Aplicar de verdad:\n{action.command}\n({action.finding_title})\n¿Confirmas?",
+                keyboard=apply_confirm_keyboard(decision.action),
+            )
+    elif decision.kind == "apply_run":
+        action = _action_at(_PENDING_APPLY.get(chat_id, []), decision.action)
+        if action is None:
+            send_message(token, chat_id, "Esa acción ya no está disponible. Usa /apply de nuevo.")
+        else:
+            threading.Thread(target=run_apply, args=(token, chat_id, action), daemon=True).start()
     else:  # unknown
         send_message(
             token, chat_id, "No entiendo ese comando. Usa /menu.", keyboard=main_keyboard()
