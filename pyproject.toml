@@ -32,6 +32,9 @@ ignore = []
 # bot.py is the same operator launcher over Telegram: spawns trusted local
 # commands (subprocess) and talks only to api.telegram.org (urllib S310).
 "bot.py" = ["S310", "S404", "S603", "S606", "S607"]
+# sentinel.py is the external watchdog: probes hosts (socket) and talks to
+# api.telegram.org + configured service URLs (urllib S310). No subprocess.
+"sentinel.py" = ["S310"]
 # integrations/* are the audited outbound-HTTP boundary (URLs built from config).
 "integrations/arr.py" = ["S310"]
 "integrations/tmdb.py" = ["S310"]
