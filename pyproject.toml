@@ -41,6 +41,7 @@ ignore = []
 "integrations/qbittorrent.py" = ["S310"]
 "integrations/gemini.py" = ["S310"]
 "integrations/ollama.py" = ["S310"]
+"integrations/telegram.py" = ["S310"]
 
 [tool.mypy]
 python_version = "3.12"

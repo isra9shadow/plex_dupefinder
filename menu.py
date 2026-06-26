@@ -296,6 +296,34 @@ def diskwatch_command(image=DOCKER_IMAGE):
     )
 
 
+def configcheck_command(image=DOCKER_IMAGE):
+    """Argv to run the config-doctor (checks env vars + config + paths). Read-only."""
+    return _docker_run("python", "run.py", "configcheck", image=image, user=None)
+
+
+def status_command(image=DOCKER_IMAGE):
+    """Argv to run the status snapshot. Runs as root with the docker socket so it
+    can list containers; CPU/RAM/GPU degrade gracefully if unavailable."""
+    return _docker_run(
+        "python",
+        "run.py",
+        "status",
+        image=image,
+        user=None,
+        extra_args=["-v", "/var/run/docker.sock:/var/run/docker.sock"],
+    )
+
+
+def autoheal_command(image=DOCKER_IMAGE):
+    """Argv to run autoheal (proposes restarts for down services; read-only)."""
+    return _docker_run("python", "run.py", "autoheal", image=image, user=None)
+
+
+def plexrefresh_command(image=DOCKER_IMAGE):
+    """Argv to run the tdarr->Plex targeted refresh (clears false duplicates)."""
+    return _docker_run("python", "run.py", "plexrefresh", image=image)
+
+
 def bot_command():
     """Argv to run the Telegram operations bot in the foreground (host)."""
     return [sys.executable, os.path.join(ROOT, "bot.py")]
@@ -503,6 +531,30 @@ def action_apply_solutions():
         print(_ok(f"\n{len(applied)} acción(es) aplicada(s) y marcada(s) como resueltas."))
 
 
+def action_configcheck():
+    """Config-doctor: what env vars / config / paths are set, missing or invalid."""
+    _run(configcheck_command(image=ensure_image()))
+    _show_report("configcheck", "Config-doctor")
+
+
+def action_status():
+    """On-demand snapshot: CPU/RAM/GPU/disks + containers not running."""
+    _run(status_command(image=ensure_image()))
+    _show_report("status", "Estado del sistema")
+
+
+def action_autoheal():
+    """Propose restarts for down services (read-only plan; apply with confirmation)."""
+    _run(autoheal_command(image=ensure_image()))
+    _show_report("autoheal", "Autoheal (reinicios propuestos)")
+
+
+def action_plexrefresh():
+    """Targeted Plex refresh for tdarr-re-encoded items (clears false duplicates)."""
+    _run(plexrefresh_command(image=ensure_image()))
+    _show_report("plexrefresh", "Refresco Plex (tdarr)")
+
+
 def action_health_checks():
     """Read-only monitoring sweep: services up, disks (SMART), DB integrity."""
     image = ensure_image()
@@ -654,6 +706,10 @@ MENU = [
     ("Analista IA — todo (logs Docker semana + organizer + duplicados)", action_analyst),
     ("Aplicar soluciones IA (con confirmación)", action_apply_solutions),
     ("Chequeos de salud (servicios + discos + DB)", action_health_checks),
+    ("Estado del sistema (CPU/RAM/GPU/discos)", action_status),
+    ("Config-doctor (qué falta por configurar)", action_configcheck),
+    ("Proponer reinicios de servicios caídos (autoheal)", action_autoheal),
+    ("Refrescar Plex tras tdarr (falsos duplicados)", action_plexrefresh),
     ("Configuración (activar/desactivar opciones)", action_config),
     ("Healthcheck de la plataforma", action_health),
     ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),

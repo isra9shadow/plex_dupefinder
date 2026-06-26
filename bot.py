@@ -59,6 +59,8 @@ ACTIONS = {
     for a in (
         Action("dupes_sim", "Duplicados — SIMULAR (no borra)", False),
         Action("analyst", "Analista IA (logs Docker + organizer + duplicados)", False),
+        Action("sysstatus", "Estado del sistema (CPU/RAM/GPU/discos)", False),
+        Action("configdoctor", "Config-doctor (qué falta por configurar)", False),
         Action("organize_plan", "Organizar — Ver plan IA (no toca nada)", False),
         Action("health", "Healthcheck de la plataforma", False),
         Action("extract", "Descomprimir rar/zip/7z + cuarentena (real)", True),
@@ -74,6 +76,8 @@ COMMANDS = {
     "/dupes": "dupes_sim",
     "/dupes_real": "dupes_real",
     "/analyst": "analyst",
+    "/estado": "sysstatus",
+    "/configdoctor": "configdoctor",
     "/plan": "organize_plan",
     "/organize": "organize",
     "/cleanup": "cleanup",
@@ -94,6 +98,8 @@ HELP_TEXT = (
     "/dupes_real — mover duplicados a cuarentena (real)\n"
     "/maintenance — todo: descomprimir → duplicados → organizar (real)\n"
     "/health — healthcheck\n"
+    "/estado — estado del sistema (CPU/RAM/GPU/discos/contenedores)\n"
+    "/configdoctor — qué variables/rutas faltan por configurar\n"
     "/apply — aplicar soluciones IA (allow-list segura, con confirmación)\n"
     "/status — estado del bot\n\n"
     "Las acciones REALES piden confirmación antes de ejecutarse."
@@ -307,6 +313,12 @@ def execute_action(key, image):
             return _exec(menu.dupefinder_command())
     if key == "dupes_real":
         return _exec(menu.dupefinder_command())
+    if key == "sysstatus":
+        _exec(menu.status_command(image=image))
+        return 0, (_read_summary("status") or "(sin datos de estado)")
+    if key == "configdoctor":
+        _exec(menu.configcheck_command(image=image))
+        return 0, (_read_summary("configcheck") or "(sin informe de config)")
     if key == "organize_plan":
         return _exec(menu.organizer_command(dry=True, image=image))
     if key == "organize":

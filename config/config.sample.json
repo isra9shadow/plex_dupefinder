@@ -83,6 +83,18 @@
         { "name": "sonarr", "path": "/mnt/cache/appdata/sonarr/sonarr.db" },
         { "name": "radarr", "path": "/mnt/cache/appdata/radarr/radarr.db" }
       ]
+    },
+    "status": {
+      "ignore_containers": ["Configarr", "recyclarr", "watchtower"]
+    },
+    "autoheal": {
+      "ignore_containers": ["Configarr", "recyclarr", "watchtower"]
+    },
+    "plexrefresh": {
+      "paths": [],
+      "sections": [],
+      "media_extensions": [".mkv", ".mp4", ".avi"],
+      "dupefinder_reports": "/mnt/cache/Downloads/DF/REPORTS"
     }
   }
 }
