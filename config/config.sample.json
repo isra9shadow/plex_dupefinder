@@ -63,6 +63,26 @@
       "max_items": 100,
       "dupefinder_reports": "/mnt/cache/Downloads/DF/REPORTS",
       "num_ctx": 8192
+    },
+    "uptime": {
+      "targets": [
+        { "name": "Plex", "host": "192.168.x.x", "port": 32400 },
+        { "name": "Sonarr", "host": "192.168.x.x", "port": 8989 },
+        { "name": "Radarr", "host": "192.168.x.x", "port": 7878 }
+      ],
+      "expect_running": [],
+      "ignore_containers": ["Configarr", "recyclarr", "watchtower"],
+      "timeout": 3.0
+    },
+    "diskwatch": {
+      "disks": [],
+      "temp_warn": 50
+    },
+    "dbcheck": {
+      "databases": [
+        { "name": "sonarr", "path": "/mnt/cache/appdata/sonarr/sonarr.db" },
+        { "name": "radarr", "path": "/mnt/cache/appdata/radarr/radarr.db" }
+      ]
     }
   }
 }

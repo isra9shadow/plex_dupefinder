@@ -4,13 +4,15 @@
 #   - unar    : extract zip/rar/7z (incl. multi-volume) for the extractor module
 #   - docker  : static client only, so logwatch can read `docker logs` via the
 #               mounted /var/run/docker.sock (no daemon inside the image)
+#   - smartmontools : `smartctl` for the diskwatch module (SMART health); needs
+#               the container run with --privileged + -v /dev:/dev to see disks
 #   - jsonschema : aictx validates Ollama structured output (Draft202012Validator);
 #                  imported at module load by integrations.ollama, so it is
 #                  REQUIRED in-container (the rest of the runtime is stdlib/urllib).
 FROM python:3.12-slim
 ARG DOCKER_CLI_VERSION=27.3.1
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg unar ca-certificates curl \
+    && apt-get install -y --no-install-recommends ffmpeg unar ca-certificates curl smartmontools \
     && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" \
        | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
     && apt-get purge -y curl \

@@ -264,6 +264,38 @@ def health_command(image=DOCKER_IMAGE):
     return _docker_run("python", "run.py", "health", image=image)
 
 
+def uptime_command(image=DOCKER_IMAGE):
+    """Argv to run the uptime check. Runs as root with the docker socket mounted
+    so it can list containers (read-only); TCP probes reach the LAN."""
+    return _docker_run(
+        "python",
+        "run.py",
+        "uptime",
+        image=image,
+        user=None,
+        extra_args=["-v", "/var/run/docker.sock:/var/run/docker.sock"],
+    )
+
+
+def dbcheck_command(image=DOCKER_IMAGE):
+    """Argv to run the SQLite corruption detector (read-only; reads DB files under
+    the mounted /mnt). Runs as root so it can read app-owned DB files."""
+    return _docker_run("python", "run.py", "dbcheck", image=image, user=None)
+
+
+def diskwatch_command(image=DOCKER_IMAGE):
+    """Argv to run the SMART disk watcher. Needs smartctl (in the image) plus raw
+    device access, so it runs privileged with /dev mounted (read-only checks)."""
+    return _docker_run(
+        "python",
+        "run.py",
+        "diskwatch",
+        image=image,
+        user=None,
+        extra_args=["--privileged", "-v", "/dev:/dev"],
+    )
+
+
 def bot_command():
     """Argv to run the Telegram operations bot in the foreground (host)."""
     return [sys.executable, os.path.join(ROOT, "bot.py")]
@@ -471,6 +503,20 @@ def action_apply_solutions():
         print(_ok(f"\n{len(applied)} acción(es) aplicada(s) y marcada(s) como resueltas."))
 
 
+def action_health_checks():
+    """Read-only monitoring sweep: services up, disks (SMART), DB integrity."""
+    image = ensure_image()
+    print("\n[1/3] Comprobando servicios/contenedores (uptime)...")
+    _run(uptime_command(image=image))
+    print("\n[2/3] Revisando salud de discos (SMART)...")
+    _run(diskwatch_command(image=image))
+    print("\n[3/3] Verificando integridad de bases de datos...")
+    _run(dbcheck_command(image=image))
+    _show_report("uptime", "Servicios (uptime)")
+    _show_report("diskwatch", "Discos (SMART)")
+    _show_report("dbcheck", "Integridad de DB")
+
+
 def action_full_maintenance():
     """Recommended order: extract archives, remove duplicates, then clean+organize."""
     if not confirm(
@@ -607,6 +653,7 @@ MENU = [
     ("Ver último plan del organizador", action_show_organizer_plan),
     ("Analista IA — todo (logs Docker semana + organizer + duplicados)", action_analyst),
     ("Aplicar soluciones IA (con confirmación)", action_apply_solutions),
+    ("Chequeos de salud (servicios + discos + DB)", action_health_checks),
     ("Configuración (activar/desactivar opciones)", action_config),
     ("Healthcheck de la plataforma", action_health),
     ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),
