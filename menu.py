@@ -144,10 +144,15 @@ def temp_config(path, mutate):
 
 
 def _git(*args):
-    """Run a git command in the repo; return CompletedProcess or None on failure."""
+    """Run a git command in the repo; return CompletedProcess or None on failure.
+
+    Injects ``-c safe.directory=ROOT`` on EVERY call so git never refuses with
+    "dubious ownership". On Unraid /root/.gitconfig lives in RAM and is wiped on
+    every reboot, so a one-off ``git config --global`` does not persist — doing it
+    inline makes the menu's self-update reboot-proof without any global state."""
     try:
         return subprocess.run(
-            ["git", "-C", ROOT, *args],
+            ["git", "-c", f"safe.directory={ROOT}", "-C", ROOT, *args],
             capture_output=True,
             text=True,
             timeout=60,
@@ -175,7 +180,6 @@ def git_update():
 
     Returns a short status string: 'updated <a>-><b>' | 'up-to-date' | 'offline'.
     """
-    _git("config", "--global", "--add", "safe.directory", ROOT)  # unraid ownership
     fetched = _git("fetch", "--quiet", "origin", "master")
     if fetched is None or fetched.returncode != 0:
         return "offline"
