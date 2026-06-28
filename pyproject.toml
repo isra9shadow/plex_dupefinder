@@ -23,6 +23,11 @@ ignore = []
 [tool.ruff.lint.per-file-ignores]
 # Tests may use assert and may construct secret-like fixture strings.
 "tests/**" = ["S101", "S105", "S106"]
+# Host launchers (menu.py/bot.py) import these on Unraid's Python 3.9, so they
+# must use timezone.utc, not the 3.11+ datetime.UTC alias UP017 would prefer.
+"core/cache.py" = ["UP017"]
+"core/logging.py" = ["UP017"]
+"aictx/providers/history.py" = ["UP017"]
 # adapters/command.py is THE single audited subprocess boundary (list args, no
 # shell, read-only callers). Bandit's subprocess warnings are expected here only.
 "adapters/command.py" = ["S603", "S607"]

@@ -9,7 +9,7 @@ and the provider pure/testable, the caller fetches incidents (via
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol
 
 from aictx.provider import ContextBlock, Tier
@@ -46,7 +46,7 @@ _INSTRUCTION = "No vuelvas a recomendar acciones ya aplicadas/resueltas."
 def _fmt_last_seen(ts: float) -> str:
     """Render a unix timestamp as a compact UTC date (best-effort)."""
     try:
-        return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     except (OverflowError, OSError, ValueError):
         return "?"
 

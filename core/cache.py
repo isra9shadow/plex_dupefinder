@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -69,10 +69,10 @@ class Cache:
 
 
 def _utcnow() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Incident:
     """One recorded incident. ``recommended``/``applied`` are parsed JSON lists."""
 
@@ -87,7 +87,7 @@ class Incident:
     applied: list[object]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class MediaRecord:
     """One cached media file. ``extra`` is the parsed JSON blob (or None)."""
 
@@ -203,7 +203,7 @@ class SqliteCache:
 
     def prune(self, *, older_than_days: int) -> int:
         """Delete rows whose ``last_seen`` is older than the cutoff. Returns count."""
-        cutoff = (datetime.now(UTC) - timedelta(days=older_than_days)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
         deleted = self._conn.execute("DELETE FROM media WHERE last_seen < ?", (cutoff,)).rowcount
         self._dirty = True
         return deleted
@@ -296,7 +296,7 @@ class SqliteCache:
         observation and merge ``recommended`` (union, order-preserving) so newly
         suggested actions accumulate without losing prior ones.
         """
-        now = datetime.now(UTC).timestamp()
+        now = datetime.now(timezone.utc).timestamp()
         recommended_list = list(recommended)
         existing = self._conn.execute(
             "SELECT recommended FROM incidents WHERE fingerprint = ?",
