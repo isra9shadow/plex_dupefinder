@@ -194,13 +194,17 @@ def git_update():
 # --- command builders (pure, testable) -----------------------------------------
 
 
-def dupefinder_command():
-    """Argv to run the legacy duplicate finder in its configured mode."""
-    return [sys.executable, os.path.join(ROOT, "plex_dupefinder.py")]
+def dupefinder_command(image=DOCKER_IMAGE):
+    """Argv to run the legacy duplicate finder in its configured mode.
+
+    Runs INSIDE the container (not host python3) so it gets tabulate/requests/
+    PlexAPI from the image — the host's pip packages are wiped by Unraid on every
+    reboot. The mounted config.json/media/cache make paths resolve as configured."""
+    return _docker_run("python", "plex_dupefinder.py", image=image)
 
 
-def dupefinder_diagnose_command():
-    return [sys.executable, os.path.join(ROOT, "plex_dupefinder.py"), "--diagnose-paths"]
+def dupefinder_diagnose_command(image=DOCKER_IMAGE):
+    return _docker_run("python", "plex_dupefinder.py", "--diagnose-paths", image=image)
 
 
 def _docker_run(*inner, image=DOCKER_IMAGE, user=RUN_AS, extra_args=()):
@@ -419,13 +423,14 @@ def _organizer_real(*, apply_moves):
 
 
 def action_dupefinder_simulate():
+    image = ensure_image()
     with temp_config(LEGACY_CFG, lambda d: set_legacy_dry_run(d, True)):
-        _run(dupefinder_command())
+        _run(dupefinder_command(image=image))
 
 
 def action_dupefinder_real():
     if confirm("Esto MOVERÁ los duplicados a cuarentena (real). ¿Continuar?"):
-        _run(dupefinder_command())
+        _run(dupefinder_command(image=ensure_image()))
 
 
 def action_organizer_plan():
@@ -584,7 +589,7 @@ def action_full_maintenance():
     with temp_config(IZUMI_CFG, set_izumi_live):
         _run(extractor_command(dry=False, image=image))
     print("\n[2/3] Quitando duplicados (cuarentena real)...")
-    _run(dupefinder_command())
+    _run(dupefinder_command(image=image))
     print("\n[3/3] Limpiando basura + organizando ficheros (real)...")
     _organizer_real(apply_moves=True)
     print("\nMantenimiento completo terminado.")
@@ -612,7 +617,7 @@ def action_show_organizer_plan():
 
 
 def action_diagnose_paths():
-    _run(dupefinder_diagnose_command())
+    _run(dupefinder_diagnose_command(image=ensure_image()))
 
 
 # --- configuration submenu -----------------------------------------------------

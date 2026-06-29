@@ -6,9 +6,10 @@
 #               mounted /var/run/docker.sock (no daemon inside the image)
 #   - smartmontools : `smartctl` for the diskwatch module (SMART health); needs
 #               the container run with --privileged + -v /dev:/dev to see disks
-#   - jsonschema : aictx validates Ollama structured output (Draft202012Validator);
-#                  imported at module load by integrations.ollama, so it is
-#                  REQUIRED in-container (the rest of the runtime is stdlib/urllib).
+#   - python deps (requirements.txt): jsonschema (aictx structured-output
+#               validation) + tabulate/requests/PlexAPI (the legacy
+#               plex_dupefinder.py engine, now run in-container so it no longer
+#               depends on host pip packages that Unraid wipes on every reboot).
 FROM python:3.12-slim
 ARG DOCKER_CLI_VERSION=27.3.1
 RUN apt-get update \
@@ -18,4 +19,5 @@ RUN apt-get update \
     && apt-get purge -y curl \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir "jsonschema>=4.0"
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt

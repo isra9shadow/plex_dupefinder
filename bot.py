@@ -310,9 +310,9 @@ def execute_action(key, image):
     """Run one action (captured) and return (rc, text). Mirrors menu.action_*."""
     if key == "dupes_sim":
         with menu.temp_config(menu.LEGACY_CFG, lambda d: menu.set_legacy_dry_run(d, True)):
-            return _exec(menu.dupefinder_command())
+            return _exec(menu.dupefinder_command(image=image))
     if key == "dupes_real":
-        return _exec(menu.dupefinder_command())
+        return _exec(menu.dupefinder_command(image=image))
     if key == "sysstatus":
         _exec(menu.status_command(image=image))
         return 0, (_read_summary("status") or "(sin datos de estado)")
@@ -348,7 +348,7 @@ def execute_action(key, image):
         steps = []
         with menu.temp_config(menu.IZUMI_CFG, menu.set_izumi_live):
             steps.append(("descomprimir", *_exec(menu.extractor_command(dry=False, image=image))))
-        steps.append(("duplicados", *_exec(menu.dupefinder_command())))
+        steps.append(("duplicados", *_exec(menu.dupefinder_command(image=image))))
         with menu.temp_config(
             menu.IZUMI_CFG, lambda d: menu.set_izumi_organizer(d, live=True, apply_moves=True)
         ):
