@@ -15,6 +15,7 @@ from __future__ import annotations
 import calendar
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -30,7 +31,6 @@ IZUMI_CFG = os.path.join(ROOT, "config", "config.json")
 DOCKER_IMAGE = "python:3.12-slim"  # fallback (no ffprobe)
 LOCAL_IMAGE = "izumi-organizer:local"  # built from Dockerfile.organizer (has ffmpeg)
 RUN_AS = "99:100"  # Unraid nobody:users — moved files stay manipulable by *arr/user
-RUN_UID, RUN_GID = 99, 100  # numeric form of RUN_AS for os.chown of output dirs
 _W = 60  # menu width
 
 
@@ -361,77 +361,52 @@ def _image_is_stale(created_epoch):
         return False
 
 
-def _add_traverse(path):
-    """Best-effort: add g+rx/o+rx to ``path`` so uid 99 can traverse it. Only
-    touches the mode when bits are missing (shared parents like the Downloads
-    share are made traversable, never re-owned)."""
-    try:
-        mode = os.stat(path).st_mode
-        if mode & 0o055 != 0o055:
-            os.chmod(path, mode | 0o055)
-    except OSError:
-        pass
+def _runtime_dirs():
+    """``(recursive, own)`` host dirs the --user 99:100 workers must write to.
 
-
-def _chown_99(path):
-    """Best-effort: own ``path`` by 99:100 (Unraid nobody:users) and make it
-    group/owner-writable. No-op (ignored) when not running as root."""
-    try:
-        os.chown(path, RUN_UID, RUN_GID)
-    except OSError:
-        pass
-    try:
-        os.chmod(path, 0o775)
-    except OSError:
-        pass
-
-
-def _ensure_writable(path, *, recursive):
-    """Create ``path`` so the container's uid 99 can write to it. Missing levels
-    are created owned by 99:100; pre-existing ancestors are only made traversable
-    (not re-owned). ``recursive`` also re-owns existing contents — use it ONLY for
-    small izumi-owned trees (reports/logs), never for the huge quarantine."""
-    if not path:
-        return
-    target = Path(path)
-    for ancestor in reversed(target.parents):  # / down to the parent
-        if ancestor.exists():
-            _add_traverse(str(ancestor))
-    for level in [*reversed(target.parents), target]:
-        if not level.exists():
-            try:
-                os.mkdir(level)
-            except OSError:
-                pass
-            _chown_99(str(level))
-    _chown_99(str(target))  # own the leaf even if it already existed (root-owned)
-    if recursive and target.is_dir():
-        for root_dir, dirs, files in os.walk(target):
-            for name in (*dirs, *files):
-                _chown_99(os.path.join(root_dir, name))
-
-
-def _ensure_runtime_dirs():
-    """Best-effort (root only): create + own (99:100) the host dirs the --user
-    99:100 containers write to, so they don't fail with EACCES. Ownership on
-    /mnt/cache persists across reboots. No-op when not root."""
+    Read from the izumi + legacy dupefinder config (with sane Unraid defaults) so
+    the prepare step matches exactly what the modules use. ``recursive`` are small
+    izumi-owned trees (chown -R); ``own`` are big/shared dirs we only take at the
+    directory level so their existing contents keep their owners."""
     izumi_logs = _cfg_get(IZUMI_CFG, "logging", "dir") or "/mnt/cache/appdata/izumi/logs"
-    json_reports = _cfg_get(LEGACY_CFG, "JSON_REPORT_DIR")
-    quarantine = _cfg_get(LEGACY_CFG, "QUARANTINE_DIR")
-    for small in (_izumi_reports_dir(), izumi_logs, json_reports):
-        if isinstance(small, str) and small:
-            _ensure_writable(small, recursive=True)
-    if isinstance(quarantine, str) and quarantine:
-        _ensure_writable(quarantine, recursive=False)
+    izumi_reports = _izumi_reports_dir()
+    quarantine = _cfg_get(LEGACY_CFG, "QUARANTINE_DIR") or "/mnt/cache/Downloads/DF/QUARANTINE"
+    df_root = os.path.dirname(quarantine)  # holds QUARANTINE + REPORTS + plans
+    recursive = [izumi_logs, izumi_reports, "/app/plans"]  # /app/plans = legacy plans
+    own = [df_root, quarantine]
+    return recursive, own
 
 
-def ensure_image():
-    """Return the image to use: the local one (ffmpeg + unar + docker client),
-    built on demand and AUTO-REBUILT when Dockerfile.organizer changes (so a
-    pulled Dockerfile update is never silently ignored). Falls back to the plain
-    slim image if it cannot be built (e.g. offline). Also ensures the runtime
-    output dirs exist + are writable by the container's uid 99:100."""
-    _ensure_runtime_dirs()
+def prepare_dirs_command(image=DOCKER_IMAGE):
+    """Argv for a ROOT container that creates + gives to 99:100 the dirs the
+    --user 99:100 workers write to. It runs with the SAME mounts/uid view as the
+    workers (a host-side chown can disagree with the container's mount view), so
+    it is the authoritative permissions step. Reboot-safe (ownership on /mnt/cache
+    persists)."""
+    recursive, own = _runtime_dirs()
+    quoted_all = " ".join(shlex.quote(d) for d in (*recursive, *own))
+    quoted_rec = " ".join(shlex.quote(d) for d in recursive)
+    quoted_own = " ".join(shlex.quote(d) for d in own)
+    script = (
+        f"mkdir -p {quoted_all} 2>/dev/null; "
+        f"chown -R 99:100 {quoted_rec} 2>/dev/null; "
+        f"chown 99:100 {quoted_own} 2>/dev/null; true"
+    )
+    return _docker_run("sh", "-c", script, image=image, user=None)
+
+
+def _prepare_dirs(image):
+    """Best-effort: run the prepare-dirs container (silent; never blocks the menu)."""
+    try:
+        subprocess.run(prepare_dirs_command(image), capture_output=True)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _build_image():
+    """Build/return the local image (ffmpeg + unar + docker client), AUTO-REBUILT
+    when Dockerfile.organizer changes. Falls back to the slim image if it cannot
+    be built (e.g. offline)."""
     created = _image_created_epoch()
     if created is not None and not _image_is_stale(created):
         return LOCAL_IMAGE
@@ -457,6 +432,15 @@ def ensure_image():
         return LOCAL_IMAGE
     print(_warn("[docker] build failed — using slim image (no ffprobe/unar/docker)."))
     return DOCKER_IMAGE
+
+
+def ensure_image():
+    """Return the image to use and ensure the runtime output dirs exist + are
+    writable by the container's uid 99:100 (via a root container with the same
+    mounts — the authoritative permissions step)."""
+    image = _build_image()
+    _prepare_dirs(image)
+    return image
 
 
 def _izumi_reports_dir():

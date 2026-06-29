@@ -62,6 +62,15 @@ def test_cfg_get_missing_file_returns_default(tmp_path: Path) -> None:
     assert menu._cfg_get(str(tmp_path / "absent.json"), "a", default=7) == 7
 
 
+def test_prepare_dirs_command_is_a_root_container_that_chowns() -> None:
+    argv = menu.prepare_dirs_command()
+    assert argv[0] == "docker"
+    assert "--user" not in argv  # must run as root to chown
+    joined = " ".join(argv)
+    assert "mkdir -p" in joined and "chown -R 99:100" in joined and "chown 99:100" in joined
+    assert "/app/plans" in joined  # legacy discovery-plan dir on the repo mount
+
+
 def test_health_command_runs_health_in_container() -> None:
     argv = menu.health_command()
     assert argv[0] == "docker"
