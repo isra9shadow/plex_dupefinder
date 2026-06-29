@@ -30,6 +30,7 @@ IZUMI_CFG = os.path.join(ROOT, "config", "config.json")
 DOCKER_IMAGE = "python:3.12-slim"  # fallback (no ffprobe)
 LOCAL_IMAGE = "izumi-organizer:local"  # built from Dockerfile.organizer (has ffmpeg)
 RUN_AS = "99:100"  # Unraid nobody:users — moved files stay manipulable by *arr/user
+RUN_UID, RUN_GID = 99, 100  # numeric form of RUN_AS for os.chown of output dirs
 _W = 60  # menu width
 
 
@@ -360,11 +361,77 @@ def _image_is_stale(created_epoch):
         return False
 
 
+def _add_traverse(path):
+    """Best-effort: add g+rx/o+rx to ``path`` so uid 99 can traverse it. Only
+    touches the mode when bits are missing (shared parents like the Downloads
+    share are made traversable, never re-owned)."""
+    try:
+        mode = os.stat(path).st_mode
+        if mode & 0o055 != 0o055:
+            os.chmod(path, mode | 0o055)
+    except OSError:
+        pass
+
+
+def _chown_99(path):
+    """Best-effort: own ``path`` by 99:100 (Unraid nobody:users) and make it
+    group/owner-writable. No-op (ignored) when not running as root."""
+    try:
+        os.chown(path, RUN_UID, RUN_GID)
+    except OSError:
+        pass
+    try:
+        os.chmod(path, 0o775)
+    except OSError:
+        pass
+
+
+def _ensure_writable(path, *, recursive):
+    """Create ``path`` so the container's uid 99 can write to it. Missing levels
+    are created owned by 99:100; pre-existing ancestors are only made traversable
+    (not re-owned). ``recursive`` also re-owns existing contents — use it ONLY for
+    small izumi-owned trees (reports/logs), never for the huge quarantine."""
+    if not path:
+        return
+    target = Path(path)
+    for ancestor in reversed(target.parents):  # / down to the parent
+        if ancestor.exists():
+            _add_traverse(str(ancestor))
+    for level in [*reversed(target.parents), target]:
+        if not level.exists():
+            try:
+                os.mkdir(level)
+            except OSError:
+                pass
+            _chown_99(str(level))
+    _chown_99(str(target))  # own the leaf even if it already existed (root-owned)
+    if recursive and target.is_dir():
+        for root_dir, dirs, files in os.walk(target):
+            for name in (*dirs, *files):
+                _chown_99(os.path.join(root_dir, name))
+
+
+def _ensure_runtime_dirs():
+    """Best-effort (root only): create + own (99:100) the host dirs the --user
+    99:100 containers write to, so they don't fail with EACCES. Ownership on
+    /mnt/cache persists across reboots. No-op when not root."""
+    izumi_logs = _cfg_get(IZUMI_CFG, "logging", "dir") or "/mnt/cache/appdata/izumi/logs"
+    json_reports = _cfg_get(LEGACY_CFG, "JSON_REPORT_DIR")
+    quarantine = _cfg_get(LEGACY_CFG, "QUARANTINE_DIR")
+    for small in (_izumi_reports_dir(), izumi_logs, json_reports):
+        if isinstance(small, str) and small:
+            _ensure_writable(small, recursive=True)
+    if isinstance(quarantine, str) and quarantine:
+        _ensure_writable(quarantine, recursive=False)
+
+
 def ensure_image():
     """Return the image to use: the local one (ffmpeg + unar + docker client),
     built on demand and AUTO-REBUILT when Dockerfile.organizer changes (so a
     pulled Dockerfile update is never silently ignored). Falls back to the plain
-    slim image if it cannot be built (e.g. offline)."""
+    slim image if it cannot be built (e.g. offline). Also ensures the runtime
+    output dirs exist + are writable by the container's uid 99:100."""
+    _ensure_runtime_dirs()
     created = _image_created_epoch()
     if created is not None and not _image_is_stale(created):
         return LOCAL_IMAGE

@@ -33,7 +33,9 @@ ignore = []
 "adapters/command.py" = ["S603", "S607"]
 # menu.py is an operator launcher: it only spawns trusted local commands
 # (python3/docker) with list args (no shell). Subprocess warnings expected.
-"menu.py" = ["S404", "S603", "S606", "S607"]
+# S103: output dirs are intentionally group-writable (0o775) so the Unraid
+# `users` group (gid 100) the containers run as can write to them.
+"menu.py" = ["S103", "S404", "S603", "S606", "S607"]
 # bot.py is the same operator launcher over Telegram: spawns trusted local
 # commands (subprocess) and talks only to api.telegram.org (urllib S310).
 "bot.py" = ["S310", "S404", "S603", "S606", "S607"]
