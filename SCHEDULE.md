@@ -60,15 +60,16 @@ cd "$REPO" || exit 1
 run(){ docker run --rm -v "$REPO:/app" -v /mnt/user:/mnt/user -v /mnt/cache:/mnt/cache -w /app "$@"; }
 sock=(-v /var/run/docker.sock:/var/run/docker.sock)
 
-# 1) read-only health + AI sweep (fills the reports notifypush reads)
-run "${sock[@]}" "$IMG" python run.py uptime
-run "${sock[@]}" "$IMG" python run.py dbcheck
+# SMART disk health needs a privileged container with /dev (kept separate).
 run --privileged -v /dev:/dev "$IMG" python run.py diskwatch
+# Optional AI passes (need Ollama reachable) — include in the digest if you run them:
 run "${sock[@]}" "$IMG" python run.py logwatch
 run "$IMG" python run.py analyst
 
-# 2) push the consolidated digest (LIVE via IZUMI_MODE; notify.enabled must be true)
-run -e IZUMI_MODE=live "$IMG" python run.py notifypush
+# The 'nightly' pipeline runs the read-only sweep (uptime, dbcheck, permsdoctor,
+# backupaudit, netdoctor) and then notifypush, in one container. IZUMI_MODE=live
+# (+ notify.enabled in config.json) makes notifypush actually send.
+run -e IZUMI_MODE=live "${sock[@]}" "$IMG" python run.py nightly
 ```
 
 `notifypush` only reads reports + sends (never moves/deletes); a missing token,

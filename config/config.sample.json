@@ -30,7 +30,9 @@
     "monitor": ["downloads_watchdog", "disk_inventory"],
     "inventory": ["docker_inventory", "disk_inventory", "share_inventory", "network_inventory", "dashboard"],
     "daily": ["media_integrity", "arr_orphans", "dashboard"],
-    "weekly": ["plex_dupefinder"]
+    "weekly": ["plex_dupefinder"],
+    "health": ["uptime", "dbcheck", "permsdoctor", "backupaudit", "netdoctor"],
+    "nightly": ["uptime", "dbcheck", "permsdoctor", "backupaudit", "netdoctor", "notifypush"]
   },
   "integrations": {
     "radarr": { "url": "http://192.168.6.62:7878", "api_key_ref": "RADARR_API_KEY" },

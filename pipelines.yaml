@@ -16,3 +16,26 @@ pipelines:
   organize-manuales:
     - plex_dupefinder
     - organizer
+
+  # Read-only health sweep (all need only the docker socket). SMART disk health
+  # (diskwatch) is intentionally NOT here — it needs a privileged container with
+  # /dev mounted, so run it separately. Safe to dry-run end to end.
+  health:
+    - uptime
+    - dbcheck
+    - permsdoctor
+    - backupaudit
+    - netdoctor
+
+  # Nightly cron: run the read-only sweep, then push the consolidated digest to
+  # Telegram. Run with IZUMI_MODE=live (+ notify.enabled) so notifypush sends:
+  #   docker run --rm -e IZUMI_MODE=live -v /var/run/docker.sock:/var/run/docker.sock \
+  #     -v "$REPO:/app" -v /mnt/user:/mnt/user -v /mnt/cache:/mnt/cache -w /app \
+  #     izumi-organizer:local python run.py nightly
+  nightly:
+    - uptime
+    - dbcheck
+    - permsdoctor
+    - backupaudit
+    - netdoctor
+    - notifypush
