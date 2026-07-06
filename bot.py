@@ -61,6 +61,7 @@ ACTIONS = {
         Action("analyst", "Analista IA (logs Docker + organizer + duplicados)", False),
         Action("sysstatus", "Estado del sistema (CPU/RAM/GPU/discos)", False),
         Action("configdoctor", "Config-doctor (qué falta por configurar)", False),
+        Action("notifypush", "Enviar informe ahora por Telegram (push)", False),
         Action("organize_plan", "Organizar — Ver plan IA (no toca nada)", False),
         Action("health", "Healthcheck de la plataforma", False),
         Action("extract", "Descomprimir rar/zip/7z + cuarentena (real)", True),
@@ -79,6 +80,7 @@ COMMANDS = {
     "/analyst": "analyst",
     "/estado": "sysstatus",
     "/configdoctor": "configdoctor",
+    "/informe": "notifypush",
     "/plan": "organize_plan",
     "/organize": "organize",
     "/cleanup": "cleanup",
@@ -102,6 +104,7 @@ HELP_TEXT = (
     "/health — healthcheck\n"
     "/estado — estado del sistema (CPU/RAM/GPU/discos/contenedores)\n"
     "/configdoctor — qué variables/rutas faltan por configurar\n"
+    "/informe — enviar ahora el informe consolidado por Telegram\n"
     "/dbrepair — reparar base de datos corrupta (real, copia a cuarentena)\n"
     "/apply — aplicar soluciones IA (allow-list segura, con confirmación)\n"
     "/status — estado del bot\n\n"
@@ -374,6 +377,10 @@ def execute_action(key, image):
             + (_read_summary("dbrepair") or "(sin datos)")
         )
         return rc, body
+    if key == "notifypush":
+        with menu.temp_config(menu.IZUMI_CFG, menu.set_izumi_push):
+            rc, _ = _exec(menu.notifypush_command(image=image))
+        return rc, (_read_summary("notifypush") or "(sin informe)")
     if key == "health":
         return _exec(menu.health_command(image=image))
     return 1, f"acción desconocida: {key}"

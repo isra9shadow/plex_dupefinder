@@ -40,6 +40,42 @@ declarative in `pipelines.yaml`. Proposed cadence (tune later):
 destructive modules start in report-only and are switched on per
 `MIGRATION_PLAN.md` only after parity.
 
+## Nightly AI report → Telegram (push)
+
+The `notifypush` module gathers the freshest `summary.md` of every read-only
+module and pushes a single digest to Telegram. Run the health/AI sweep first,
+then `notifypush` last. Prereqs (one-time):
+- `config.json`: `notify.enabled = true` (gates the cron send) and the DB list
+  under `integrations.dbcheck` / `.dbrepair`.
+- `.env` (repo root, git-ignored): `IZUMI_TELEGRAM_BOT_TOKEN` + `IZUMI_TELEGRAM_CHAT_ID`.
+
+**Unraid User Script** (Settings → User Scripts → *Add New Script*; schedule
+`0 3 * * *`). Adjust `REPO` to where the repo is checked out:
+
+```bash
+#!/bin/bash
+REPO=/mnt/cache/appdata/izumi/plex_dupefinder   # <-- adjust to your checkout
+IMG=izumi-organizer:local
+cd "$REPO" || exit 1
+run(){ docker run --rm -v "$REPO:/app" -v /mnt/user:/mnt/user -v /mnt/cache:/mnt/cache -w /app "$@"; }
+sock=(-v /var/run/docker.sock:/var/run/docker.sock)
+
+# 1) read-only health + AI sweep (fills the reports notifypush reads)
+run "${sock[@]}" "$IMG" python run.py uptime
+run "${sock[@]}" "$IMG" python run.py dbcheck
+run --privileged -v /dev:/dev "$IMG" python run.py diskwatch
+run "${sock[@]}" "$IMG" python run.py logwatch
+run "$IMG" python run.py analyst
+
+# 2) push the consolidated digest (LIVE via IZUMI_MODE; notify.enabled must be true)
+run -e IZUMI_MODE=live "$IMG" python run.py notifypush
+```
+
+`notifypush` only reads reports + sends (never moves/deletes); a missing token,
+disabled notify, or a Telegram failure is recorded in its report, never fatal.
+An on-demand send is also available from the SSH menu ("Enviar informe ahora por
+Telegram") and the bot (`/informe`), which force LIVE + notify for that one run.
+
 ## Migration note
 During shadow (Phase P3–P6), legacy User Scripts and the new pipelines run in
 parallel; the new ones are report-only. Legacy entries are **disabled, not

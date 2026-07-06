@@ -128,6 +128,15 @@ def set_izumi_live(data):
     return data
 
 
+def set_izumi_push(data):
+    """Force LIVE + notify.enabled for a one-off Telegram push (notifypush). The
+    on-demand 'enviar informe ahora' should send regardless of the persisted
+    notify.enabled (which gates only the passive nightly cron)."""
+    data.setdefault("safety", {})["mode"] = "live"
+    data.setdefault("notify", {})["enabled"] = True
+    return data
+
+
 @contextmanager
 def temp_config(path, mutate):
     """Apply ``mutate(copy)`` to the JSON config for the duration of the block,
@@ -271,6 +280,13 @@ def logwatch_command(image=DOCKER_IMAGE):
 def health_command(image=DOCKER_IMAGE):
     """Argv to run the izumi platform healthcheck in a container."""
     return _docker_run("python", "run.py", "health", image=image)
+
+
+def notifypush_command(image=DOCKER_IMAGE):
+    """Argv to run the proactive Telegram digest (reads the latest module reports
+    and pushes a consolidated summary). No docker socket needed; the token/chat id
+    come from .env via core/secrets (repo mounted at /app)."""
+    return _docker_run("python", "run.py", "notifypush", image=image)
 
 
 def uptime_command(image=DOCKER_IMAGE):
@@ -663,6 +679,19 @@ def action_dbrepair():
     _show_report("dbrepair", "Reparación de DB")
 
 
+def action_notifypush():
+    """Send a consolidated health/AI report to Telegram right now (push).
+
+    Runs the digest in LIVE with notify enabled for this one run, so it sends
+    regardless of the persisted notify.enabled (that flag gates the nightly cron).
+    Reads whatever reports already exist — run the health checks / analyst first
+    for a fuller digest."""
+    image = ensure_image()
+    with temp_config(IZUMI_CFG, set_izumi_push):
+        _run(notifypush_command(image=image))
+    _show_report("notifypush", "Informe (Telegram)")
+
+
 def action_full_maintenance():
     """Recommended order: extract archives, remove duplicates, then clean+organize."""
     if not confirm(
@@ -805,6 +834,7 @@ MENU = [
     ("Config-doctor (qué falta por configurar)", action_configcheck),
     ("Proponer reinicios de servicios caídos (autoheal)", action_autoheal),
     ("Refrescar Plex tras tdarr (falsos duplicados)", action_plexrefresh),
+    ("Enviar informe ahora por Telegram (push)", action_notifypush),
     ("Configuración (activar/desactivar opciones)", action_config),
     ("Healthcheck de la plataforma", action_health),
     ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),
