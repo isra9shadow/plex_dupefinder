@@ -2716,6 +2716,31 @@ def discovery_pass(sections):
         gather_workers = 1
     gather_prefetched = 0
 
+    # Opt-in (default OFF): READ-ONLY shadow-compare of the native dedupe port
+    # (modules.media.dedupe) against the legacy decision, for the parity window
+    # (CTO-12). It NEVER changes what the engine does — it only records where the
+    # two would disagree, into run_report['phases']['shadow_compare']. The harness
+    # is fully exception-isolated: any failure disables it, never breaks the run.
+    shadow_compare = bool(cfg.get('SHADOW_COMPARE', False))
+    _shadow = None
+    if shadow_compare:
+        try:
+            from modules.media.dedupe.keeper import KeeperPolicy as _KeeperPolicy
+            from modules.media.dedupe.scoring import ScoreWeights as _ScoreWeights
+            from modules.media.dedupe.shadow import diff_decision as _diff_decision
+            from modules.media.dedupe.shadow import native_decision as _native_decision
+            _shadow = {
+                'native': _native_decision,
+                'diff': _diff_decision,
+                'weights': _ScoreWeights.from_config(cfg),
+                'policy': _KeeperPolicy.from_config(cfg),
+            }
+        except Exception:
+            log.exception("SHADOW_COMPARE setup failed; disabling the shadow harness")
+            shadow_compare = False
+    shadow_checked = 0
+    shadow_drift_groups = []
+
     # Per-phase wall-clock breakdown (read-only profiling, IMP-03): so the
     # operator can see where discovery time goes — Plex search vs PASS0
     # analyze+poll vs gather (filesystem stats + scoring).
@@ -2817,6 +2842,18 @@ def discovery_pass(sections):
                 if parts is None:  # miss / prefetch disabled / prefetch failed
                     parts = _build_parts_for_item(item, compute_hashes)
                 decision = select_keeper(parts)
+                # READ-ONLY parity harness (opt-in): compare the native port's
+                # decision to the legacy one and record drift, without ever using
+                # the native result. Isolated so it can never affect the run.
+                if shadow_compare and _shadow is not None:
+                    try:
+                        _native = _shadow['native'](parts, _shadow['weights'], _shadow['policy'])
+                        _diffs = _shadow['diff'](_native, decision)
+                        shadow_checked += 1
+                        if _diffs:
+                            shadow_drift_groups.append({'title': title, 'diffs': _diffs})
+                    except Exception:
+                        log.exception("SHADOW_COMPARE failed for %r (ignored)", title)
                 t_gather += time.monotonic() - _tg
                 group = {
                     'title': title,
@@ -2862,6 +2899,19 @@ def discovery_pass(sections):
         'gather_prefetched': gather_prefetched,
     }
     run_report['phases']['discovery_breakdown'] = breakdown
+
+    if shadow_compare:
+        # Parity evidence for the native port (CTO-12): how many decisions were
+        # compared and where (if anywhere) native and legacy would diverge. Bounded
+        # so a pathological run can't bloat the report.
+        run_report['phases']['shadow_compare'] = {
+            'checked': shadow_checked,
+            'drift': len(shadow_drift_groups),
+            'drift_groups': shadow_drift_groups[:50],
+        }
+        print("  [SHADOW] native vs legacy: %d checked, %d drift"
+              % (shadow_checked, len(shadow_drift_groups)))
+        log.info("SHADOW_COMPARE checked=%d drift=%d", shadow_checked, len(shadow_drift_groups))
     print("  [profile] discovery breakdown — get_dupes %.2fs | pass0 %.2fs | gather %.2fs"
           % (t_get_dupes, t_pass0, t_gather))
     log.info("PASS1 BREAKDOWN get_dupes=%.2fs pass0=%.2fs gather=%.2fs cache_hits=%d",
