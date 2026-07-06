@@ -51,6 +51,8 @@ _DEFAULT_SOURCES = (
     "diskwatch",
     "dbcheck",
     "status",
+    "permsdoctor",
+    "backupaudit",
     "autoheal",
     "analyst",
     "logwatch",

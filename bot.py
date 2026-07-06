@@ -62,6 +62,8 @@ ACTIONS = {
         Action("sysstatus", "Estado del sistema (CPU/RAM/GPU/discos)", False),
         Action("configdoctor", "Config-doctor (qué falta por configurar)", False),
         Action("notifypush", "Enviar informe ahora por Telegram (push)", False),
+        Action("permsdoctor", "Doctor de permisos appdata (propone chmod/chown)", False),
+        Action("backupaudit", "Auditar backups + imágenes locales", False),
         Action("organize_plan", "Organizar — Ver plan IA (no toca nada)", False),
         Action("health", "Healthcheck de la plataforma", False),
         Action("extract", "Descomprimir rar/zip/7z + cuarentena (real)", True),
@@ -81,6 +83,8 @@ COMMANDS = {
     "/estado": "sysstatus",
     "/configdoctor": "configdoctor",
     "/informe": "notifypush",
+    "/permisos": "permsdoctor",
+    "/backups": "backupaudit",
     "/plan": "organize_plan",
     "/organize": "organize",
     "/cleanup": "cleanup",
@@ -105,6 +109,8 @@ HELP_TEXT = (
     "/estado — estado del sistema (CPU/RAM/GPU/discos/contenedores)\n"
     "/configdoctor — qué variables/rutas faltan por configurar\n"
     "/informe — enviar ahora el informe consolidado por Telegram\n"
+    "/permisos — revisar permisos de appdata (propone chmod/chown para /apply)\n"
+    "/backups — auditar frescura de backups + imágenes locales\n"
     "/dbrepair — reparar base de datos corrupta (real, copia a cuarentena)\n"
     "/apply — aplicar soluciones IA (allow-list segura, con confirmación)\n"
     "/status — estado del bot\n\n"
@@ -381,6 +387,12 @@ def execute_action(key, image):
         with menu.temp_config(menu.IZUMI_CFG, menu.set_izumi_push):
             rc, _ = _exec(menu.notifypush_command(image=image))
         return rc, (_read_summary("notifypush") or "(sin informe)")
+    if key == "permsdoctor":
+        _exec(menu.permsdoctor_command(image=image))
+        return 0, (_read_summary("permsdoctor") or "(sin informe de permisos)")
+    if key == "backupaudit":
+        _exec(menu.backupaudit_command(image=image))
+        return 0, (_read_summary("backupaudit") or "(sin informe de backups)")
     if key == "health":
         return _exec(menu.health_command(image=image))
     return 1, f"acción desconocida: {key}"
@@ -409,9 +421,10 @@ def run_action(token, chat_id, key):
 
 def _apply_plan_paths():
     """The module plan.json files that carry applicable actions: the logwatch +
-    analyst AI diagnoses AND autoheal's proposed restarts (actions[] shape)."""
+    analyst AI diagnoses, autoheal's restarts, and permsdoctor's chmod/chown."""
     reports = menu._izumi_reports_dir()
-    return [Path(reports) / sub / "plan.json" for sub in ("logwatch", "analyst", "autoheal")]
+    subs = ("logwatch", "analyst", "autoheal", "permsdoctor")
+    return [Path(reports) / sub / "plan.json" for sub in subs]
 
 
 def _mark_applied(action):

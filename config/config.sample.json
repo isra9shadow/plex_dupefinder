@@ -114,10 +114,23 @@
       "media_extensions": [".mkv", ".mp4", ".avi"],
       "dupefinder_reports": "/mnt/cache/Downloads/DF/REPORTS"
     },
+    "permsdoctor": {
+      "paths": [
+        { "path": "/mnt/cache/appdata/mysql-main", "owner": "99:100", "mode": "0755" },
+        { "path": "/mnt/cache/appdata/traefik/acme.json", "mode": "0600" }
+      ]
+    },
+    "backupaudit": {
+      "local_image_markers": ["dyalf/"],
+      "backups": [
+        { "name": "sonarr", "glob": "/mnt/cache/appdata/sonarr/Backups/scheduled/*.zip", "max_age_days": 2 },
+        { "name": "radarr", "glob": "/mnt/cache/appdata/radarr/Backups/scheduled/*.zip", "max_age_days": 2 }
+      ]
+    },
     "notifypush": {
       "title": "izumi · informe",
       "max_section_chars": 1200,
-      "sources": ["uptime", "diskwatch", "dbcheck", "status", "autoheal", "analyst", "logwatch"]
+      "sources": ["uptime", "diskwatch", "dbcheck", "status", "permsdoctor", "backupaudit", "autoheal", "analyst", "logwatch"]
     }
   }
 }

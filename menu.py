@@ -342,6 +342,25 @@ def configcheck_command(image=DOCKER_IMAGE):
     return _docker_run("python", "run.py", "configcheck", image=image, user=None)
 
 
+def permsdoctor_command(image=DOCKER_IMAGE):
+    """Argv to run the permissions doctor (checks appdata owner/mode; read-only).
+    Runs as root so it can stat app-owned paths; proposes chmod/chown for /apply."""
+    return _docker_run("python", "run.py", "permsdoctor", image=image, user=None)
+
+
+def backupaudit_command(image=DOCKER_IMAGE):
+    """Argv to run the backup/image hygiene audit (read-only). Root + docker socket
+    so it can list containers to flag local images watchtower shouldn't watch."""
+    return _docker_run(
+        "python",
+        "run.py",
+        "backupaudit",
+        image=image,
+        user=None,
+        extra_args=["-v", "/var/run/docker.sock:/var/run/docker.sock"],
+    )
+
+
 def status_command(image=DOCKER_IMAGE):
     """Argv to run the status snapshot. Runs as root with the docker socket so it
     can list containers; CPU/RAM/GPU degrade gracefully if unavailable."""
@@ -567,9 +586,11 @@ def action_analyst():
 
 def _ai_plan_paths():
     """The module plan.json files that carry applicable actions: the logwatch +
-    analyst AI diagnoses AND autoheal's proposed restarts (actions[] shape)."""
+    analyst AI diagnoses, autoheal's proposed restarts, and permsdoctor's proposed
+    chmod/chown (all actions[]/diagnosis shapes the apply layer understands)."""
     reports = _izumi_reports_dir()
-    return [Path(reports) / sub / "plan.json" for sub in ("logwatch", "analyst", "autoheal")]
+    subs = ("logwatch", "analyst", "autoheal", "permsdoctor")
+    return [Path(reports) / sub / "plan.json" for sub in subs]
 
 
 def _mark_applied(actions):
@@ -649,17 +670,23 @@ def action_plexrefresh():
 
 
 def action_health_checks():
-    """Read-only monitoring sweep: services up, disks (SMART), DB integrity."""
+    """Read-only monitoring sweep: services, disks, DB integrity, permisos, backups."""
     image = ensure_image()
-    print("\n[1/3] Comprobando servicios/contenedores (uptime)...")
+    print("\n[1/5] Comprobando servicios/contenedores (uptime)...")
     _run(uptime_command(image=image))
-    print("\n[2/3] Revisando salud de discos (SMART)...")
+    print("\n[2/5] Revisando salud de discos (SMART)...")
     _run(diskwatch_command(image=image))
-    print("\n[3/3] Verificando integridad de bases de datos...")
+    print("\n[3/5] Verificando integridad de bases de datos...")
     _run(dbcheck_command(image=image))
+    print("\n[4/5] Revisando permisos de appdata...")
+    _run(permsdoctor_command(image=image))
+    print("\n[5/5] Auditando backups + imágenes locales...")
+    _run(backupaudit_command(image=image))
     _show_report("uptime", "Servicios (uptime)")
     _show_report("diskwatch", "Discos (SMART)")
     _show_report("dbcheck", "Integridad de DB")
+    _show_report("permsdoctor", "Permisos (appdata)")
+    _show_report("backupaudit", "Backups + imágenes")
 
 
 def action_dbrepair():
@@ -692,6 +719,18 @@ def action_notifypush():
     with temp_config(IZUMI_CFG, set_izumi_push):
         _run(notifypush_command(image=image))
     _show_report("notifypush", "Informe (Telegram)")
+
+
+def action_permsdoctor():
+    """Check appdata owner/mode drift (read-only); proposes chmod/chown for /apply."""
+    _run(permsdoctor_command(image=ensure_image()))
+    _show_report("permsdoctor", "Permisos (appdata)")
+
+
+def action_backupaudit():
+    """Audit backup freshness + flag local images watchtower shouldn't watch (read-only)."""
+    _run(backupaudit_command(image=ensure_image()))
+    _show_report("backupaudit", "Backups + imágenes")
 
 
 def action_full_maintenance():
@@ -948,6 +987,8 @@ MENU = [
     ("Aplicar soluciones IA (con confirmación)", action_apply_solutions),
     ("Chequeos de salud (servicios + discos + DB)", action_health_checks),
     ("Reparar base de datos corrupta (con confirmación)", action_dbrepair),
+    ("Doctor de permisos appdata (propone chmod/chown)", action_permsdoctor),
+    ("Auditar backups + imágenes locales", action_backupaudit),
     ("Estado del sistema (CPU/RAM/GPU/discos)", action_status),
     ("Config-doctor (qué falta por configurar)", action_configcheck),
     ("Proponer reinicios de servicios caídos (autoheal)", action_autoheal),
