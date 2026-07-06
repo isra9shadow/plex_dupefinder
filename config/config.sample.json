@@ -133,6 +133,10 @@
       "shared_network": "proxynet",
       "ignore_containers": ["Configarr", "recyclarr", "watchtower"]
     },
+    "shadowcheck": {
+      "reports": "/mnt/cache/Downloads/DF/REPORTS",
+      "window": 20
+    },
     "notifypush": {
       "title": "izumi · informe",
       "max_section_chars": 1200,
