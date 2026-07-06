@@ -30,10 +30,22 @@ deterministic and offline (the doctor module wires the real env via
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Final
+
+# menu.py imports this module on the Unraid HOST, whose Python is 3.9; StrEnum
+# only arrived in 3.11. Fall back to a str+Enum with StrEnum's __str__ semantics
+# so the host launchers import cleanly (the containerised modules use real StrEnum).
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:  # pragma: no cover - exercised only on the 3.9 host launcher
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        __str__ = str.__str__
+
 
 # A path checker maps a path string to whether it exists. Injected so the pure
 # evaluation functions never touch the real filesystem (tests stay offline).
@@ -128,7 +140,7 @@ def _dotted_get(config: Mapping[str, object], dotted: str) -> object | None:
             if part not in node:
                 return None
             node = node[part]
-        elif isinstance(node, Sequence) and not isinstance(node, str | bytes):
+        elif isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
             try:
                 idx = int(part)
             except ValueError:
