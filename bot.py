@@ -67,6 +67,7 @@ ACTIONS = {
         Action("organize", "Organizar — Limpiar basura + MOVER ficheros (real)", True),
         Action("cleanup", "Organizar — Solo limpiar basura (real)", True),
         Action("dupes_real", "Duplicados — EJECUTAR (cuarentena real)", True),
+        Action("dbrepair", "Reparar base de datos corrupta (real, con copia)", True),
         Action("maintenance", "Mantenimiento completo (descomprimir→dupes→organizar)", True),
     )
 }
@@ -82,6 +83,7 @@ COMMANDS = {
     "/organize": "organize",
     "/cleanup": "cleanup",
     "/extract": "extract",
+    "/dbrepair": "dbrepair",
     "/maintenance": "maintenance",
     "/health": "health",
 }
@@ -100,6 +102,7 @@ HELP_TEXT = (
     "/health — healthcheck\n"
     "/estado — estado del sistema (CPU/RAM/GPU/discos/contenedores)\n"
     "/configdoctor — qué variables/rutas faltan por configurar\n"
+    "/dbrepair — reparar base de datos corrupta (real, copia a cuarentena)\n"
     "/apply — aplicar soluciones IA (allow-list segura, con confirmación)\n"
     "/status — estado del bot\n\n"
     "Las acciones REALES piden confirmación antes de ejecutarse."
@@ -358,6 +361,19 @@ def execute_action(key, image):
             rc = step_rc or rc
         text = "\n\n".join(f"[{name}] rc={step_rc}\n{out[-1500:]}" for name, step_rc, out in steps)
         return rc, text
+    if key == "dbrepair":
+        # Read-only detector first, then the confirmed LIVE repair (snapshot →
+        # stop → repair → start → verify; rolls back on any failure).
+        _exec(menu.dbcheck_command(image=image))
+        with menu.temp_config(menu.IZUMI_CFG, menu.set_izumi_live):
+            rc, _ = _exec(menu.dbrepair_command(image=image))
+        body = (
+            "🗄️ INTEGRIDAD DB\n\n"
+            + (_read_summary("dbcheck") or "(sin datos)")
+            + "\n\n———\n\n🔧 REPARACIÓN DB\n\n"
+            + (_read_summary("dbrepair") or "(sin datos)")
+        )
+        return rc, body
     if key == "health":
         return _exec(menu.health_command(image=image))
     return 1, f"acción desconocida: {key}"

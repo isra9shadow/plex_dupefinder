@@ -84,6 +84,24 @@
         { "name": "radarr", "path": "/mnt/cache/appdata/radarr/radarr.db" }
       ]
     },
+    "dbrepair": {
+      "verify_timeout_s": 30,
+      "repair_strategy_order": ["native_backup", "recover"],
+      "databases": [
+        {
+          "app": "sonarr",
+          "container": "sonarr",
+          "db_path": "/mnt/cache/appdata/sonarr/sonarr.db",
+          "native_backup_glob": "/mnt/cache/appdata/sonarr/Backups/scheduled/*.zip"
+        },
+        {
+          "app": "radarr",
+          "container": "radarr",
+          "db_path": "/mnt/cache/appdata/radarr/radarr.db",
+          "native_backup_glob": "/mnt/cache/appdata/radarr/Backups/scheduled/*.zip"
+        }
+      ]
+    },
     "status": {
       "ignore_containers": ["Configarr", "recyclarr", "watchtower"]
     },

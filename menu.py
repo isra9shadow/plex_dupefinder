@@ -292,6 +292,21 @@ def dbcheck_command(image=DOCKER_IMAGE):
     return _docker_run("python", "run.py", "dbcheck", image=image, user=None)
 
 
+def dbrepair_command(image=DOCKER_IMAGE):
+    """Argv to run the operator-confirmed SQLite auto-repair. Needs the docker
+    socket (to stop/start the app container through the apply allow-list) plus
+    /mnt for the DB + native backups. The LIVE flag is set by the caller via
+    temp_config; DRY_RUN only plans."""
+    return _docker_run(
+        "python",
+        "run.py",
+        "dbrepair",
+        image=image,
+        user=None,
+        extra_args=["-v", "/var/run/docker.sock:/var/run/docker.sock"],
+    )
+
+
 def diskwatch_command(image=DOCKER_IMAGE):
     """Argv to run the SMART disk watcher. Needs smartctl (in the image) plus raw
     device access, so it runs privileged with /dev mounted (read-only checks)."""
@@ -629,6 +644,25 @@ def action_health_checks():
     _show_report("dbcheck", "Integridad de DB")
 
 
+def action_dbrepair():
+    """Repair corrupt SQLite DBs with confirmation (snapshot → stop → repair →
+    start → verify; rolls back on any failure). Always shows the read-only
+    dbcheck first; only acts after explicit confirmation, and the corrupt DB is
+    copied to quarantine before anything is touched (recoverable)."""
+    image = ensure_image()
+    print("\nRevisando integridad de bases de datos (solo lectura)...")
+    _run(dbcheck_command(image=image))
+    _show_report("dbcheck", "Integridad de DB")
+    if not confirm(
+        "Reparar bases corruptas (real): copia a cuarentena → para contenedor → "
+        "restaura backup nativo o reconstruye → reinicia → verifica. ¿Continuar?"
+    ):
+        return
+    with temp_config(IZUMI_CFG, set_izumi_live):
+        _run(dbrepair_command(image=image))
+    _show_report("dbrepair", "Reparación de DB")
+
+
 def action_full_maintenance():
     """Recommended order: extract archives, remove duplicates, then clean+organize."""
     if not confirm(
@@ -766,6 +800,7 @@ MENU = [
     ("Analista IA — todo (logs Docker semana + organizer + duplicados)", action_analyst),
     ("Aplicar soluciones IA (con confirmación)", action_apply_solutions),
     ("Chequeos de salud (servicios + discos + DB)", action_health_checks),
+    ("Reparar base de datos corrupta (con confirmación)", action_dbrepair),
     ("Estado del sistema (CPU/RAM/GPU/discos)", action_status),
     ("Config-doctor (qué falta por configurar)", action_configcheck),
     ("Proponer reinicios de servicios caídos (autoheal)", action_autoheal),
