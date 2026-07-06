@@ -175,13 +175,67 @@ def diagnosis_from_plan(plan: object) -> dict[str, Any] | None:
     return None
 
 
+def actions_from_serialized(items: object) -> list[ApplyAction]:
+    """Re-hydrate + RE-CLASSIFY pre-serialized actions (e.g. ``autoheal``'s plan).
+
+    Modules like :mod:`modules.ops.autoheal` already store fully-formed actions as
+    ``plan.json`` ``actions[]`` (``{command, category, finding_title, severity}``)
+    instead of the ``diagnosis.findings[].unraid_commands`` shape. This re-classifies
+    each command (defense in depth — only allow-listed, metachar-free, guard-passing
+    commands survive) and recomputes the fingerprint from the title so the applied
+    incident resolves the same row the proposing module recorded. De-duplicated.
+    """
+    out: list[ApplyAction] = []
+    seen: set[str] = set()
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        command = item.get("command")
+        if not isinstance(command, str):
+            continue
+        verdict = classify(command)
+        if not verdict.allowed:
+            continue
+        cmd = command.strip()
+        if cmd in seen:
+            continue
+        seen.add(cmd)
+        title = item.get("finding_title")
+        title_s = title if isinstance(title, str) else "?"
+        severity = item.get("severity")
+        severity_s = severity if isinstance(severity, str) else "info"
+        out.append(
+            ApplyAction(
+                command=cmd,
+                category=verdict.category,
+                finding_title=title_s,
+                fingerprint=finding_fingerprint(title_s),
+                severity=severity_s,
+            )
+        )
+    return out
+
+
 def load_actions_from_file(path: Path) -> list[ApplyAction]:
-    """Read a module's ``plan.json`` and return its applicable actions ([] on miss)."""
+    """Read a module's ``plan.json`` and return its applicable actions ([] on miss).
+
+    Supports BOTH plan shapes: an AI ``diagnosis`` (logwatch/analyst) and a
+    pre-serialized ``actions[]`` list (autoheal). The diagnosis takes precedence;
+    the ``actions[]`` fallback lets operator-confirmed ``/apply`` also surface the
+    restarts autoheal proposed.
+    """
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
-    return extract_actions(diagnosis_from_plan(data))
+    diagnosis = diagnosis_from_plan(data)
+    if diagnosis is not None:
+        return extract_actions(diagnosis)
+    if isinstance(data, dict):
+        return actions_from_serialized(data.get("actions"))
+    return []
 
 
 def collect_actions(plan_paths: Iterable[Path]) -> list[ApplyAction]:

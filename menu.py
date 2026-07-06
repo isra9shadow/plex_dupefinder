@@ -565,9 +565,10 @@ def action_analyst():
 
 
 def _ai_plan_paths():
-    """The module plan.json files that carry an AI diagnosis (logwatch + analyst)."""
+    """The module plan.json files that carry applicable actions: the logwatch +
+    analyst AI diagnoses AND autoheal's proposed restarts (actions[] shape)."""
     reports = _izumi_reports_dir()
-    return [Path(reports) / sub / "plan.json" for sub in ("logwatch", "analyst")]
+    return [Path(reports) / sub / "plan.json" for sub in ("logwatch", "analyst", "autoheal")]
 
 
 def _mark_applied(actions):

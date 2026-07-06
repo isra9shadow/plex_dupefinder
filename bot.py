@@ -408,9 +408,10 @@ def run_action(token, chat_id, key):
 
 
 def _apply_plan_paths():
-    """The module plan.json files that carry an AI diagnosis (logwatch + analyst)."""
+    """The module plan.json files that carry applicable actions: the logwatch +
+    analyst AI diagnoses AND autoheal's proposed restarts (actions[] shape)."""
     reports = menu._izumi_reports_dir()
-    return [Path(reports) / sub / "plan.json" for sub in ("logwatch", "analyst")]
+    return [Path(reports) / sub / "plan.json" for sub in ("logwatch", "analyst", "autoheal")]
 
 
 def _mark_applied(action):
