@@ -27,6 +27,7 @@ ignore = []
 # must use timezone.utc, not the 3.11+ datetime.UTC alias UP017 would prefer.
 "core/cache.py" = ["UP017"]
 "core/logging.py" = ["UP017"]
+"core/metrics.py" = ["UP017"]
 "aictx/providers/history.py" = ["UP017"]
 # configspec is imported by menu.py on the Unraid HOST (Python 3.9); the StrEnum
 # 3.11-fallback block must stay, so ignore the "modernise" lints that would strip it.

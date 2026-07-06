@@ -20,6 +20,7 @@ from core import report as report_mod
 from core.config import Config
 from core.errors import LockError
 from core.fs import Fs
+from core.metrics import MetricsStore
 from core.notify import Notifier
 from core.safety import SafetyPolicy
 from core.types import EventKind, NotificationEvent, RunContext, RunReport, SafetyMode
@@ -57,6 +58,17 @@ def health_check(ctx: RunContext) -> int:
     return 0 if all(checks.values()) else 1
 
 
+def _record_metrics(ctx: RunContext, report: RunReport, *, ok: bool) -> None:
+    """Persist this run's metrics for trends. Best-effort — never breaks a run."""
+    try:
+        with MetricsStore(ctx.config.reporting.dir / "cache" / "metrics.db") as store:
+            store.record(
+                report.run_id, report.module, report.metrics, ok=ok, failures=len(report.failures)
+            )
+    except Exception:  # pragma: no cover - observability must never fail the run
+        ctx.logger.warning("metrics store failed (ignored)", module=report.module)
+
+
 def _run_module(ctx: RunContext, name: str) -> int:
     fn = registry.get(name)
     if fn is None:
@@ -83,6 +95,7 @@ def _run_module(ctx: RunContext, name: str) -> int:
         },
     )
     report_mod.write_report(report, ctx.config.reporting.dir)
+    _record_metrics(ctx, report, ok=result.ok)
     kind = EventKind.RUN_OK if result.ok else EventKind.RUN_FAIL
     ctx.notify.send(
         NotificationEvent(
