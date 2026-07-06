@@ -23,6 +23,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from aictx.apply import apply_action, collect_actions, default_runner
+from core import configedit, configspec
 from core.cache import SqliteCache
 
 ROOT = os.path.dirname(os.path.realpath(__file__))
@@ -815,6 +816,122 @@ def action_config():
             print(_danger("Opción no válida."))
 
 
+# --- config EDITOR (driven by core/configspec, writes config.json + .env) ------
+
+
+def _env_path():
+    return os.environ.get("IZUMI_ENV_FILE") or os.path.join(ROOT, ".env")
+
+
+def _read_env_value(key):
+    """Return the raw value of ``key`` from the .env file, or None if unset."""
+    try:
+        with open(_env_path(), encoding="utf-8") as fh:
+            for raw in fh:
+                s = raw.strip()
+                if s and not s.startswith("#") and "=" in s:
+                    k, _, v = s.partition("=")
+                    if k.strip() == key:
+                        return v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return None
+
+
+def _write_env_value(key, value):
+    try:
+        with open(_env_path(), encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        text = ""
+    with open(_env_path(), "w", encoding="utf-8") as fh:
+        fh.write(configedit.upsert_env_line(text, key, str(value)))
+
+
+def _spec_current_display(spec):
+    """Human display of a spec's current value (secrets are redacted)."""
+    if spec.is_env:
+        v = _read_env_value(spec.key)
+        if v is None:
+            return _dim("(sin definir)")
+        return _ok(configedit.redact(v) if configedit.is_secret(spec) else v)
+    v = _cfg_get(IZUMI_CFG, *spec.location.split("."))
+    return _dim("(sin definir)") if v is None else _ok(str(v))
+
+
+def _set_spec_value(spec, value):
+    if spec.is_env:
+        _write_env_value(spec.key, value)
+    else:
+        _cfg_set(IZUMI_CFG, value, *spec.location.split("."))
+
+
+def _edit_one_spec(spec):
+    """Prompt for and store a new value for ``spec`` (validated via configspec)."""
+    print("\n" + _title(spec.key) + "\n" + _dim("─" * _W))
+    if spec.description:
+        print(_dim(spec.description))
+    print(f"  Actual: {_spec_current_display(spec)}")
+    if spec.choices:
+        print(_dim(f"  Opciones: {', '.join(spec.choices)}"))
+    if spec.how:
+        print(_dim(f"  {spec.how}"))
+    try:
+        raw = input(_warn("Nuevo valor (enter=cancela): "))
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if not raw.strip():
+        return
+    ok, value, detail = configedit.coerce_value(spec, raw, path_exists=os.path.exists)
+    if not ok:
+        print(_danger(f"Valor inválido: {detail}"))
+        return
+    if detail:
+        print(_warn(detail))
+    _set_spec_value(spec, value)
+    dest = ".env" if spec.is_env else "config.json"
+    print(_ok(f"Guardado en {dest}."))
+
+
+def action_config_editor():
+    """Edit ANY registered setting (config.json + .env) from the menu, grouped by
+    section and validated by core/configspec — the write side of the config-doctor."""
+    groups = configspec.groups()
+    while True:
+        print("\n" + _title("Editor de configuración") + "\n" + _dim("─" * _W))
+        for i, group in enumerate(groups, start=1):
+            print(f"  {_c('96', f'{i:>2}')}) {group}")
+        print(f"  {_c('96', ' 0')}) Volver")
+        try:
+            choice = input("Sección: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if choice == "0":
+            return
+        if not (choice.isdigit() and 1 <= int(choice) <= len(groups)):
+            print(_danger("Opción no válida."))
+            continue
+        specs = configspec.specs_for_group(groups[int(choice) - 1])
+        while True:
+            print("\n" + _title(groups[int(choice) - 1]) + "\n" + _dim("─" * _W))
+            for i, spec in enumerate(specs, start=1):
+                print(f"  {_c('96', f'{i:>2}')}) {spec.key:<28} {_spec_current_display(spec)}")
+            print(f"  {_c('96', ' 0')}) Volver")
+            try:
+                pick = input("Ajuste a cambiar: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if pick == "0":
+                break
+            if pick.isdigit() and 1 <= int(pick) <= len(specs):
+                _edit_one_spec(specs[int(pick) - 1])
+            else:
+                print(_danger("Opción no válida."))
+
+
 MENU = [
     ("Buscar duplicados — SIMULAR (no borra nada)", action_dupefinder_simulate),
     ("Buscar duplicados — EJECUTAR (cuarentena real)", action_dupefinder_real),
@@ -837,6 +954,7 @@ MENU = [
     ("Refrescar Plex tras tdarr (falsos duplicados)", action_plexrefresh),
     ("Enviar informe ahora por Telegram (push)", action_notifypush),
     ("Configuración (activar/desactivar opciones)", action_config),
+    ("Editor de configuración (todos los ajustes + .env)", action_config_editor),
     ("Healthcheck de la plataforma", action_health),
     ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),
     ("Bot de Telegram (lanzar ejecuciones por chat)", action_bot),

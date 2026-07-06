@@ -108,6 +108,11 @@ def _looks_like_url(value: str) -> bool:
     return bool(_URL_RE.match(value.strip()))
 
 
+def is_valid_url(value: str) -> bool:
+    """Public http(s):// URL check (used by the menu config editor / callers)."""
+    return _looks_like_url(value)
+
+
 # --- resolution: pull a value out of env or a dotted config path ---------------
 
 
@@ -573,6 +578,7 @@ __all__ = [
     "evaluate",
     "evaluate_setting",
     "groups",
+    "is_valid_url",
     "resolve",
     "specs_for_group",
 ]
