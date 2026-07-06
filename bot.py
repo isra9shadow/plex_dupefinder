@@ -123,6 +123,7 @@ HELP_TEXT = (
     "/cleanup — organizar: solo limpiar basura (real)\n"
     "/extract — descomprimir rar/zip/7z + cuarentena (real)\n\n"
     "🩺 Salud & IA\n"
+    "/ask <pregunta> — pregunta en lenguaje natural (corre doctores + IA local)\n"
     "/analyst — analista IA (logs Docker + organizer + duplicados)\n"
     "/apply — aplicar arreglos IA (allow-list segura, con confirmación)\n"
     "/dbrepair — reparar base de datos corrupta (real, con copia)\n"
@@ -200,6 +201,8 @@ def decide(*, message_text=None, callback_data=None, authorized):
         return Decision("status")
     if first == "/apply":
         return Decision("apply_list")
+    if first == "/ask":
+        return Decision("ask", text[len("/ask") :].strip())
     key = command_for(text)
     if key:
         return Decision("confirm" if ACTIONS[key].destructive else "run", key)
@@ -449,6 +452,25 @@ def execute_action(key, image):
     return 1, f"acción desconocida: {key}"
 
 
+def run_ask(token, chat_id, question):
+    """Worker (thread): answer a natural-language ops question via the assistant."""
+    if not question:
+        send_message(token, chat_id, "Escribe tu pregunta: /ask ¿por qué falla mysql?")
+        return
+    if not _RUN_LOCK.acquire(blocking=False):
+        send_message(token, chat_id, "⏳ Ya hay una ejecución en curso. Espera a que termine.")
+        return
+    try:
+        send_message(token, chat_id, f"🤔 Analizando: {question[:120]}…")
+        image = menu.ensure_image()
+        rc, out = _exec(menu.assistant_command(question, image=image))
+        send_message(token, chat_id, format_result("Asistente", rc, out, cap=8000))
+    except Exception as exc:  # a failed answer must never kill the bot
+        send_message(token, chat_id, f"❌ Error respondiendo: {exc}")
+    finally:
+        _RUN_LOCK.release()
+
+
 def run_action(token, chat_id, key):
     """Worker (run in a thread): execute one action and report the result."""
     act = ACTIONS[key]
@@ -541,6 +563,10 @@ def _dispatch(decision, token, chat_id):
     elif decision.kind == "run":
         threading.Thread(
             target=run_action, args=(token, chat_id, decision.action), daemon=True
+        ).start()
+    elif decision.kind == "ask":
+        threading.Thread(
+            target=run_ask, args=(token, chat_id, decision.action), daemon=True
         ).start()
     elif decision.kind == "apply_list":
         actions = collect_actions(_apply_plan_paths())

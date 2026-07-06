@@ -54,6 +54,13 @@ def test_decide_confirms_destructive_actions() -> None:
     assert d.kind == "confirm" and d.action == "organize"
 
 
+def test_decide_ask_carries_the_question() -> None:
+    d = bot.decide(message_text="/ask ¿por qué falla mysql?", authorized=True)
+    assert d.kind == "ask" and d.action == "¿por qué falla mysql?"
+    empty = bot.decide(message_text="/ask", authorized=True)
+    assert empty.kind == "ask" and empty.action == ""
+
+
 def test_decide_callback_act_destructive_needs_confirm() -> None:
     assert bot.decide(callback_data="act:dupes_real", authorized=True).kind == "confirm"
     assert bot.decide(callback_data="act:dupes_sim", authorized=True).kind == "run"

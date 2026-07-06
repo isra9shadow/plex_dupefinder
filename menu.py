@@ -379,6 +379,21 @@ def shadowcheck_command(image=DOCKER_IMAGE):
     return _docker_run("python", "run.py", "shadowcheck", image=image)
 
 
+def assistant_command(question, image=DOCKER_IMAGE):
+    """Argv to ask the NL assistant: it routes to read-only doctors, runs them and
+    answers with the local LLM. Root + docker socket so the routed modules
+    (uptime/netdoctor) can inspect docker. ``question`` is a single list arg (no shell)."""
+    return _docker_run(
+        "python",
+        "assistant.py",
+        "-q",
+        question,
+        image=image,
+        user=None,
+        extra_args=["-v", "/var/run/docker.sock:/var/run/docker.sock"],
+    )
+
+
 def status_command(image=DOCKER_IMAGE):
     """Argv to run the status snapshot. Runs as root with the docker socket so it
     can list containers; CPU/RAM/GPU degrade gracefully if unavailable."""
@@ -1005,6 +1020,18 @@ def action_shadowcheck():
     _show_report("shadowcheck", "Monitor de paridad (shadow)")
 
 
+def action_ask():
+    """Ask the NL assistant a question; it routes to read-only doctors + local LLM."""
+    try:
+        question = input(_warn("Pregunta al asistente: ")).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if not question:
+        return
+    _run(assistant_command(question, image=ensure_image()))
+
+
 # --- guided flows (collapse variants into one no-thinking action) --------------
 
 
@@ -1095,6 +1122,7 @@ def action_advanced_menu():
     _run_submenu(
         "Avanzado",
         [
+            ("Preguntar al asistente IA (lenguaje natural)", action_ask),
             ("Estado del sistema (CPU/RAM/GPU/discos)", action_status),
             ("Proponer reinicios de servicios caídos (autoheal)", action_autoheal),
             ("Refrescar Plex tras tdarr (falsos duplicados)", action_plexrefresh),
