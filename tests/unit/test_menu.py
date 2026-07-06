@@ -107,6 +107,54 @@ def test_destructive_action_aborts_when_declined(monkeypatch) -> None:
     assert calls == []  # nothing ran
 
 
+def test_menu_items_are_dispatchable_and_headers_excluded() -> None:
+    items = menu._menu_items()
+    # Every dispatchable item has a callable action; section headers are excluded.
+    assert items and all(callable(action) for _label, action in items)
+    # Headers exist in MENU but carry no action.
+    assert any(action is None for _label, action in menu.MENU)
+
+
+def test_render_menu_numbers_items_not_headers() -> None:
+    out = menu.render_menu("v1")
+    # Home shows section headers (unnumbered) and one number per dispatchable item.
+    assert "Rápido" in out and "Avanzado" in out
+    assert "10)" in out  # ten dispatchable items -> reaches 10
+    assert "11)" not in out  # and no more
+
+
+def _noop_temp_config(_path, _mutate):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _cm():
+        yield
+
+    return _cm()
+
+
+def test_dupes_guided_simulates_then_moves_on_confirm(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(menu, "ensure_image", lambda: "img")
+    monkeypatch.setattr(menu, "_run", lambda argv: calls.append(argv))
+    monkeypatch.setattr(menu, "temp_config", _noop_temp_config)  # don't touch real config
+    monkeypatch.setattr(menu, "confirm", lambda _prompt: True)  # accept the move
+    menu.action_dupes_guided()
+    # Two dupefinder runs: the simulation first, then the real move after confirm.
+    assert len(calls) == 2
+    assert all(c[-1].endswith("plex_dupefinder.py") for c in calls)
+
+
+def test_dupes_guided_only_simulates_when_declined(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(menu, "ensure_image", lambda: "img")
+    monkeypatch.setattr(menu, "_run", lambda argv: calls.append(argv))
+    monkeypatch.setattr(menu, "temp_config", _noop_temp_config)
+    monkeypatch.setattr(menu, "confirm", lambda _prompt: False)  # decline the move
+    menu.action_dupes_guided()
+    assert len(calls) == 1  # only the simulation ran; nothing moved
+
+
 def test_set_legacy_dry_run_toggles_flag() -> None:
     assert menu.set_legacy_dry_run({}, True)["DRY_RUN"] is True
     assert menu.set_legacy_dry_run({}, False)["DRY_RUN"] is False

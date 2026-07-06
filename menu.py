@@ -374,6 +374,11 @@ def netdoctor_command(image=DOCKER_IMAGE):
     )
 
 
+def shadowcheck_command(image=DOCKER_IMAGE):
+    """Argv to run the parity-window monitor (read-only; reads dupefinder reports)."""
+    return _docker_run("python", "run.py", "shadowcheck", image=image)
+
+
 def status_command(image=DOCKER_IMAGE):
     """Argv to run the status snapshot. Runs as root with the docker socket so it
     can list containers; CPU/RAM/GPU degrade gracefully if unavailable."""
@@ -994,36 +999,140 @@ def action_config_editor():
                 print(_danger("Opción no válida."))
 
 
+def action_shadowcheck():
+    """Parity-window monitor: summarizes native-vs-legacy drift (read-only)."""
+    _run(shadowcheck_command(image=ensure_image()))
+    _show_report("shadowcheck", "Monitor de paridad (shadow)")
+
+
+# --- guided flows (collapse variants into one no-thinking action) --------------
+
+
+def action_dupes_guided():
+    """One flow for duplicates: simulate → show → confirm → move to quarantine.
+
+    Replaces the separate SIMULAR/EJECUTAR entries: you always see the result of a
+    dry run first, then decide (nothing is moved without your yes)."""
+    image = ensure_image()
+    print(_dim("\nBuscando duplicados (simulación, no borra nada)..."))
+    with temp_config(LEGACY_CFG, lambda d: set_legacy_dry_run(d, True)):
+        _run(dupefinder_command(image=image))
+    if confirm("¿Mover los duplicados encontrados a cuarentena (real, recuperable)?"):
+        with temp_config(LEGACY_CFG, lambda d: set_legacy_dry_run(d, False)):
+            _run(dupefinder_command(image=image))
+        print(_ok("Hecho — los duplicados están en cuarentena (recuperables)."))
+
+
+def action_organize_guided():
+    """One flow for organizing: show the AI plan → confirm → clean + move files."""
+    image = ensure_image()
+    print(_dim("\nAnalizando organización (plan IA, no toca nada)..."))
+    _run(organizer_command(dry=True, image=image))
+    _show_report("organizer", "Plan del organizador")
+    if confirm("¿Aplicar: limpiar basura + mover ficheros a su sitio (real)?"):
+        _organizer_real(apply_moves=True)
+        print(_ok("Organización aplicada."))
+
+
+def action_diagnose_and_fix():
+    """One flow: run the AI analyst (logs + organizer + dupes), then offer the
+    guard-vetted fixes to apply with per-command confirmation."""
+    action_analyst()
+    print(_dim("\nBuscando arreglos aplicables de las diagnosis (allow-list segura)..."))
+    action_apply_solutions()
+
+
+# --- sub-menus (only the less-common actions live one level down) --------------
+
+
+def _run_submenu(title, entries):
+    """Render a small numbered sub-list and dispatch; 0 returns to home."""
+    while True:
+        print("\n" + _title(title) + "\n" + _dim("─" * _W))
+        for i, (label, _action) in enumerate(entries, start=1):
+            print(f"  {_c('96', f'{i:>2}')}) {label}")
+        print(f"  {_c('96', ' 0')}) Volver")
+        try:
+            choice = input("Elige: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if choice == "0":
+            return
+        if choice.isdigit() and 1 <= int(choice) <= len(entries):
+            entries[int(choice) - 1][1]()
+        else:
+            print(_danger("Opción no válida."))
+
+
+def action_fixers_menu():
+    """Repair/doctor tools — each is read-only or asks before acting."""
+    _run_submenu(
+        "Reparar / doctores",
+        [
+            ("Reparar base de datos corrupta (con confirmación)", action_dbrepair),
+            ("Doctor de permisos appdata (propone chmod/chown)", action_permsdoctor),
+            ("Doctor de red/DNS (getaddrinfo ENOTFOUND)", action_netdoctor),
+            ("Auditar backups + imágenes locales", action_backupaudit),
+        ],
+    )
+
+
+def action_config_menu():
+    """Everything config in one place: quick toggles, full editor, doctor."""
+    _run_submenu(
+        "Configuración",
+        [
+            ("Ajustes rápidos (activar/desactivar)", action_config),
+            ("Editor completo (config.json + .env)", action_config_editor),
+            ("Config-doctor (qué falta por configurar)", action_configcheck),
+        ],
+    )
+
+
+def action_advanced_menu():
+    """Power-user / occasional actions, kept out of the main screen."""
+    _run_submenu(
+        "Avanzado",
+        [
+            ("Estado del sistema (CPU/RAM/GPU/discos)", action_status),
+            ("Proponer reinicios de servicios caídos (autoheal)", action_autoheal),
+            ("Refrescar Plex tras tdarr (falsos duplicados)", action_plexrefresh),
+            ("Monitor de paridad (shadowcheck)", action_shadowcheck),
+            ("Ver último plan del organizador", action_show_organizer_plan),
+            ("Organizar — solo limpiar basura (no mueve)", action_organizer_cleanup_only),
+            ("Duplicados — solo simular (no toca nada)", action_dupefinder_simulate),
+            ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),
+            ("Healthcheck de la plataforma", action_health),
+            ("Bot de Telegram (ejecutar por chat)", action_bot),
+        ],
+    )
+
+
+# Curated home: sections are (None, "Title") headers; items are (label, action).
+# Common tasks are one tap at the top; rare tools live under two sub-menus so the
+# home stays short and low-friction.
 MENU = [
-    ("Buscar duplicados — SIMULAR (no borra nada)", action_dupefinder_simulate),
-    ("Buscar duplicados — EJECUTAR (cuarentena real)", action_dupefinder_real),
-    ("Organizar — Ver plan IA (no toca nada)", action_organizer_plan),
-    ("Organizar — Limpiar basura + MOVER ficheros (real)", action_organizer_full),
-    ("Organizar — Solo limpiar basura (no mueve ficheros)", action_organizer_cleanup_only),
-    ("Descomprimir archivos rar/zip/7z + cuarentena (real)", action_extract),
-    (
-        "Mantenimiento completo (orden: descomprimir → duplicados → organizar)",
-        action_full_maintenance,
-    ),
-    ("Ver último plan del organizador", action_show_organizer_plan),
-    ("Analista IA — todo (logs Docker semana + organizer + duplicados)", action_analyst),
-    ("Aplicar soluciones IA (con confirmación)", action_apply_solutions),
-    ("Chequeos de salud (servicios + discos + DB)", action_health_checks),
-    ("Reparar base de datos corrupta (con confirmación)", action_dbrepair),
-    ("Doctor de permisos appdata (propone chmod/chown)", action_permsdoctor),
-    ("Auditar backups + imágenes locales", action_backupaudit),
-    ("Doctor de red/DNS (getaddrinfo ENOTFOUND)", action_netdoctor),
-    ("Estado del sistema (CPU/RAM/GPU/discos)", action_status),
-    ("Config-doctor (qué falta por configurar)", action_configcheck),
-    ("Proponer reinicios de servicios caídos (autoheal)", action_autoheal),
-    ("Refrescar Plex tras tdarr (falsos duplicados)", action_plexrefresh),
-    ("Enviar informe ahora por Telegram (push)", action_notifypush),
-    ("Configuración (activar/desactivar opciones)", action_config),
-    ("Editor de configuración (todos los ajustes + .env)", action_config_editor),
-    ("Healthcheck de la plataforma", action_health),
-    ("Diagnóstico de rutas (dupefinder)", action_diagnose_paths),
-    ("Bot de Telegram (lanzar ejecuciones por chat)", action_bot),
+    ("Rápido", None),
+    ("🧹 Mantenimiento completo (auto)", action_full_maintenance),
+    ("🩺 Chequeo de salud (servicios · discos · DB · permisos · red)", action_health_checks),
+    ("📤 Enviar informe ahora (Telegram)", action_notifypush),
+    ("Media", None),
+    ("Quitar duplicados (simula → pregunta antes de mover)", action_dupes_guided),
+    ("Organizar ficheros (limpia basura + ordena, con confirmación)", action_organize_guided),
+    ("Descomprimir archivos (rar/zip/7z)", action_extract),
+    ("Salud & IA", None),
+    ("Diagnóstico + arreglos IA (analiza y aplica con confirmación)", action_diagnose_and_fix),
+    ("Reparar / doctores (DB · permisos · red · backups)", action_fixers_menu),
+    ("", None),
+    ("⚙️  Configuración", action_config_menu),
+    ("Avanzado …", action_advanced_menu),
 ]
+
+
+def _menu_items():
+    """The dispatchable (label, action) entries, in display order (no headers)."""
+    return [entry for entry in MENU if entry[1] is not None]
 
 
 def render_menu(version_line=""):
@@ -1031,14 +1140,20 @@ def render_menu(version_line=""):
     lines = [
         "",
         _title("╔" + bar + "╗"),
-        _title("║") + "  plex_dupefinder · menú",
+        _title("║") + "  izumi · ¿qué hacemos?",
         _title("╚" + bar + "╝"),
     ]
     if version_line:
         lines.append("  " + _dim(version_line))
-    lines.append("")
-    for i, (label, _action) in enumerate(MENU, start=1):
-        lines.append(f"  {_c('96', f'{i:>2}')}) {label}")
+    n = 0
+    for label, action in MENU:
+        if action is None:  # section header (or blank spacer)
+            lines.append("")
+            if label:
+                lines.append("  " + _dim(label))
+            continue
+        n += 1
+        lines.append(f"  {_c('96', f'{n:>2}')}) {label}")
     lines.append(f"  {_c('96', ' 0')}) Salir")
     lines.append(_dim("─" * (_W + 2)))
     return "\n".join(lines)
@@ -1072,8 +1187,9 @@ def main(argv=None):
             return 0
         if choice == "0":
             return 0
-        if choice.isdigit() and 1 <= int(choice) <= len(MENU):
-            MENU[int(choice) - 1][1]()
+        items = _menu_items()
+        if choice.isdigit() and 1 <= int(choice) <= len(items):
+            items[int(choice) - 1][1]()
         else:
             print(_danger("Opción no válida."))
 
