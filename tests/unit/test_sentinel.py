@@ -115,7 +115,7 @@ def test_sweep_reports_individual_service_when_server_up() -> None:
         sentinel.Target("plex", "tcp", "10.0.0.1", 32400),
         sentinel.Target("sonarr", "tcp", "10.0.0.1", 8989),
     ]
-    state, msgs = sweep_n(server, targets, {}, down={"sonarr"}, threshold=1)
+    _state, msgs = sweep_n(server, targets, {}, down={"sonarr"}, threshold=1)
     assert msgs == ["🔴 Servicio caído: sonarr"]
 
 

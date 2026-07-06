@@ -72,7 +72,9 @@ def test_changed_file_invalidates_via_key(tmp_path) -> None:
     st = os.stat(str(f))
     stale_key = (str(f), st.st_mtime_ns - 1, 5000, 1024)  # a different mtime
     pd._partial_hash_memo[stale_key] = {
-        "size": 5000, "head_sha256": "STALE", "tail_sha256": "STALE"
+        "size": 5000,
+        "head_sha256": "STALE",
+        "tail_sha256": "STALE",
     }
     # Current mtime differs from the stale key -> miss -> fresh compute, not "STALE".
     result = pd.compute_partial_hashes(str(f), hash_bytes=1024)

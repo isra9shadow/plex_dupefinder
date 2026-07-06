@@ -285,9 +285,7 @@ def test_live_recover_when_no_backup(tmp_path: Path) -> None:
         mode=SafetyMode.LIVE,
         integrations=_one_db_config(db, repair_strategy_order=["recover"]),  # type: ignore[arg-type]
     )
-    result = dbrepair.run(
-        ctx, runner=runner, recover_fn=fake_recover, list_fn=_no_containers
-    )
+    result = dbrepair.run(ctx, runner=runner, recover_fn=fake_recover, list_fn=_no_containers)
 
     assert result.ok
     assert dbrepair.integrity_check(str(db)) == ["ok"]
@@ -350,9 +348,7 @@ def test_live_post_verify_failure_rolls_back(tmp_path: Path) -> None:
         mode=SafetyMode.LIVE,
         integrations=_one_db_config(db, backup_glob=str(backups / "*.db")),
     )
-    result = dbrepair.run(
-        ctx, runner=runner, checker=flaky_checker, list_fn=_no_containers
-    )
+    result = dbrepair.run(ctx, runner=runner, checker=flaky_checker, list_fn=_no_containers)
 
     assert not result.ok
     assert db.read_bytes() == original  # rolled back to the original corrupt file

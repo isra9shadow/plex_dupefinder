@@ -154,9 +154,7 @@ def test_live_sends_when_enabled_and_secrets_present(
     assert _read_plan(tmp_path)["sent"] is True
 
 
-def test_live_send_failure_is_recorded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_live_send_failure_is_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_summary(tmp_path, "uptime", "ok")
     monkeypatch.setenv("IZUMI_TELEGRAM_BOT_TOKEN", "T0KEN")
     monkeypatch.setenv("IZUMI_TELEGRAM_CHAT_ID", "12345")

@@ -391,9 +391,7 @@ def _snapshot(fs: Fs, db_path: str) -> list[QuarantineEntry]:
     return entries
 
 
-def _rollback(
-    fs: Fs, entries: list[QuarantineEntry], placed: Path | None, db_path: str
-) -> None:
+def _rollback(fs: Fs, entries: list[QuarantineEntry], placed: Path | None, db_path: str) -> None:
     """Undo a failed repair: quarantine any placed file, restore the originals.
 
     Every move goes through ``core/fs`` (never a delete). After this the live DB is

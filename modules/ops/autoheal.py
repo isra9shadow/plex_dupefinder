@@ -207,9 +207,7 @@ def run(ctx: RunContext) -> ModuleResult:
     note = ""
     actions: list[ApplyAction] = []
     if plan is None:
-        note = (
-            "No readable uptime report at " f"{uptime_plan_path} — run the 'uptime' module first."
-        )
+        note = f"No readable uptime report at {uptime_plan_path} — run the 'uptime' module first."
         result.add_failure(FailureRecord(category="integration", message=note))
     else:
         names = down_containers(plan, settings.ignore_containers)

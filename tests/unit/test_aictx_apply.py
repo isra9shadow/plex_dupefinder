@@ -188,8 +188,12 @@ def test_default_runner_splits_and_combines_output(monkeypatch) -> None:
 
 def test_actions_from_serialized_reclassifies_and_dedupes() -> None:
     items = [
-        {"command": "docker restart radarr", "finding_title": "container down: radarr",
-         "severity": "warning", "category": "ignored-recomputed"},
+        {
+            "command": "docker restart radarr",
+            "finding_title": "container down: radarr",
+            "severity": "warning",
+            "category": "ignored-recomputed",
+        },
         {"command": "docker restart radarr", "finding_title": "dup"},  # duplicate command
         {"command": "rm -rf /mnt", "finding_title": "evil"},  # rejected by classify
         {"nope": 1},  # not a dict-with-command
@@ -213,8 +217,12 @@ def test_load_actions_from_file_reads_autoheal_actions_shape(tmp_path: Path) -> 
             {
                 "proposed_count": 1,
                 "actions": [
-                    {"command": "docker restart sonarr", "category": "docker-lifecycle",
-                     "finding_title": "container down: sonarr", "severity": "warning"}
+                    {
+                        "command": "docker restart sonarr",
+                        "category": "docker-lifecycle",
+                        "finding_title": "container down: sonarr",
+                        "severity": "warning",
+                    }
                 ],
             }
         ),
@@ -228,19 +236,33 @@ def test_collect_actions_unions_diagnosis_and_autoheal(tmp_path: Path) -> None:
     diag = tmp_path / "analyst.json"
     diag.write_text(
         json.dumps(
-            {"diagnosis": {"findings": [
-                {"title": "svc down", "severity": "warning",
-                 "unraid_commands": ["docker restart plex"]}
-            ]}}
+            {
+                "diagnosis": {
+                    "findings": [
+                        {
+                            "title": "svc down",
+                            "severity": "warning",
+                            "unraid_commands": ["docker restart plex"],
+                        }
+                    ]
+                }
+            }
         ),
         encoding="utf-8",
     )
     auto = tmp_path / "autoheal.json"
     auto.write_text(
-        json.dumps({"actions": [
-            {"command": "docker restart sonarr", "finding_title": "container down: sonarr",
-             "severity": "warning"}
-        ]}),
+        json.dumps(
+            {
+                "actions": [
+                    {
+                        "command": "docker restart sonarr",
+                        "finding_title": "container down: sonarr",
+                        "severity": "warning",
+                    }
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     actions = apply.collect_actions([diag, auto])

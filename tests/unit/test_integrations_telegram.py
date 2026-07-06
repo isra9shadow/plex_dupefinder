@@ -40,7 +40,7 @@ def test_split_message_empty_returns_one_empty_chunk() -> None:
 
 
 def test_split_message_packs_on_line_boundaries() -> None:
-    text = "\n".join("line %02d" % i for i in range(100))
+    text = "\n".join(f"line {i:02d}" for i in range(100))
     chunks = split_message(text, limit=40)
     assert len(chunks) > 1
     assert all(len(c) <= 40 for c in chunks)
