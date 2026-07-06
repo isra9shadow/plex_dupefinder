@@ -127,10 +127,14 @@
         { "name": "radarr", "glob": "/mnt/cache/appdata/radarr/Backups/scheduled/*.zip", "max_age_days": 2 }
       ]
     },
+    "netdoctor": {
+      "shared_network": "proxynet",
+      "ignore_containers": ["Configarr", "recyclarr", "watchtower"]
+    },
     "notifypush": {
       "title": "izumi · informe",
       "max_section_chars": 1200,
-      "sources": ["uptime", "diskwatch", "dbcheck", "status", "permsdoctor", "backupaudit", "autoheal", "analyst", "logwatch"]
+      "sources": ["uptime", "diskwatch", "dbcheck", "status", "permsdoctor", "backupaudit", "netdoctor", "autoheal", "analyst", "logwatch"]
     }
   }
 }

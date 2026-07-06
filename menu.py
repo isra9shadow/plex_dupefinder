@@ -361,6 +361,19 @@ def backupaudit_command(image=DOCKER_IMAGE):
     )
 
 
+def netdoctor_command(image=DOCKER_IMAGE):
+    """Argv to run the network/DNS doctor (read-only). Root + docker socket so it
+    can list containers + their networks to flag the getaddrinfo ENOTFOUND cause."""
+    return _docker_run(
+        "python",
+        "run.py",
+        "netdoctor",
+        image=image,
+        user=None,
+        extra_args=["-v", "/var/run/docker.sock:/var/run/docker.sock"],
+    )
+
+
 def status_command(image=DOCKER_IMAGE):
     """Argv to run the status snapshot. Runs as root with the docker socket so it
     can list containers; CPU/RAM/GPU degrade gracefully if unavailable."""
@@ -670,23 +683,26 @@ def action_plexrefresh():
 
 
 def action_health_checks():
-    """Read-only monitoring sweep: services, disks, DB integrity, permisos, backups."""
+    """Read-only sweep: services, disks, DB, permisos, backups, red/DNS."""
     image = ensure_image()
-    print("\n[1/5] Comprobando servicios/contenedores (uptime)...")
+    print("\n[1/6] Comprobando servicios/contenedores (uptime)...")
     _run(uptime_command(image=image))
-    print("\n[2/5] Revisando salud de discos (SMART)...")
+    print("\n[2/6] Revisando salud de discos (SMART)...")
     _run(diskwatch_command(image=image))
-    print("\n[3/5] Verificando integridad de bases de datos...")
+    print("\n[3/6] Verificando integridad de bases de datos...")
     _run(dbcheck_command(image=image))
-    print("\n[4/5] Revisando permisos de appdata...")
+    print("\n[4/6] Revisando permisos de appdata...")
     _run(permsdoctor_command(image=image))
-    print("\n[5/5] Auditando backups + imágenes locales...")
+    print("\n[5/6] Auditando backups + imágenes locales...")
     _run(backupaudit_command(image=image))
+    print("\n[6/6] Diagnóstico de red/DNS (contenedores aislados)...")
+    _run(netdoctor_command(image=image))
     _show_report("uptime", "Servicios (uptime)")
     _show_report("diskwatch", "Discos (SMART)")
     _show_report("dbcheck", "Integridad de DB")
     _show_report("permsdoctor", "Permisos (appdata)")
     _show_report("backupaudit", "Backups + imágenes")
+    _show_report("netdoctor", "Red / DNS")
 
 
 def action_dbrepair():
@@ -731,6 +747,13 @@ def action_backupaudit():
     """Audit backup freshness + flag local images watchtower shouldn't watch (read-only)."""
     _run(backupaudit_command(image=ensure_image()))
     _show_report("backupaudit", "Backups + imágenes")
+
+
+def action_netdoctor():
+    """Diagnose the getaddrinfo ENOTFOUND cause: containers isolated from a shared
+    user network (read-only; suggests docker network connect, does not apply it)."""
+    _run(netdoctor_command(image=ensure_image()))
+    _show_report("netdoctor", "Red / DNS (contenedores aislados)")
 
 
 def action_full_maintenance():
@@ -989,6 +1012,7 @@ MENU = [
     ("Reparar base de datos corrupta (con confirmación)", action_dbrepair),
     ("Doctor de permisos appdata (propone chmod/chown)", action_permsdoctor),
     ("Auditar backups + imágenes locales", action_backupaudit),
+    ("Doctor de red/DNS (getaddrinfo ENOTFOUND)", action_netdoctor),
     ("Estado del sistema (CPU/RAM/GPU/discos)", action_status),
     ("Config-doctor (qué falta por configurar)", action_configcheck),
     ("Proponer reinicios de servicios caídos (autoheal)", action_autoheal),

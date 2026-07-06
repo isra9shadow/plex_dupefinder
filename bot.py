@@ -64,6 +64,7 @@ ACTIONS = {
         Action("notifypush", "Enviar informe ahora por Telegram (push)", False),
         Action("permsdoctor", "Doctor de permisos appdata (propone chmod/chown)", False),
         Action("backupaudit", "Auditar backups + imágenes locales", False),
+        Action("netdoctor", "Doctor de red/DNS (getaddrinfo ENOTFOUND)", False),
         Action("organize_plan", "Organizar — Ver plan IA (no toca nada)", False),
         Action("health", "Healthcheck de la plataforma", False),
         Action("extract", "Descomprimir rar/zip/7z + cuarentena (real)", True),
@@ -85,6 +86,7 @@ COMMANDS = {
     "/informe": "notifypush",
     "/permisos": "permsdoctor",
     "/backups": "backupaudit",
+    "/red": "netdoctor",
     "/plan": "organize_plan",
     "/organize": "organize",
     "/cleanup": "cleanup",
@@ -111,6 +113,7 @@ HELP_TEXT = (
     "/informe — enviar ahora el informe consolidado por Telegram\n"
     "/permisos — revisar permisos de appdata (propone chmod/chown para /apply)\n"
     "/backups — auditar frescura de backups + imágenes locales\n"
+    "/red — diagnosticar red/DNS (contenedores aislados, ENOTFOUND)\n"
     "/dbrepair — reparar base de datos corrupta (real, copia a cuarentena)\n"
     "/apply — aplicar soluciones IA (allow-list segura, con confirmación)\n"
     "/status — estado del bot\n\n"
@@ -393,6 +396,9 @@ def execute_action(key, image):
     if key == "backupaudit":
         _exec(menu.backupaudit_command(image=image))
         return 0, (_read_summary("backupaudit") or "(sin informe de backups)")
+    if key == "netdoctor":
+        _exec(menu.netdoctor_command(image=image))
+        return 0, (_read_summary("netdoctor") or "(sin informe de red)")
     if key == "health":
         return _exec(menu.health_command(image=image))
     return 1, f"acción desconocida: {key}"

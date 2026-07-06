@@ -53,6 +53,7 @@ _DEFAULT_SOURCES = (
     "status",
     "permsdoctor",
     "backupaudit",
+    "netdoctor",
     "autoheal",
     "analyst",
     "logwatch",
