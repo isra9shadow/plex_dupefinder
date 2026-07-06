@@ -159,6 +159,19 @@ base_config = {
     # transcoded between discovery and action.
     'PARTIAL_HASH_ENABLED': False,
     'PARTIAL_HASH_BYTES': 1048576,  # 1 MiB head + 1 MiB tail
+    # Opt-in perf (default OFF): persist partial hashes ACROSS runs to
+    # plans/partial_hash_cache.db so re-runs skip re-reading each file's
+    # head+tail. The cache key carries mtime_ns+size, so a changed file is
+    # invalidated automatically; the store only keeps entries seen in the last
+    # run, so it stays bounded to the live library. Zero behaviour change: the
+    # hashes are byte-identical to a cold compute.
+    'PARTIAL_HASH_CROSS_RUN_CACHE': False,
+    # Opt-in parity harness (default OFF): READ-ONLY shadow-compare of the
+    # native dedupe port (modules/media/dedupe) against the legacy decision,
+    # recorded under run_report['phases']['shadow_compare']. It NEVER changes
+    # what the engine does — turn it on for a parity window and confirm drift=0
+    # before any future native activation.
+    'SHADOW_COMPARE': False,
     # Pause for confirmation between discovery and action when auto-deleting
     # in a non-dry-run mode. Manual mode ignores this (per-item prompts).
     'CONFIRM_BEFORE_ACTION': True,

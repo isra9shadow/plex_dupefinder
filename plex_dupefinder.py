@@ -600,6 +600,75 @@ def is_files_stable(file_paths, wait_seconds):
 # parallel pre-gather. A changed file gets a new mtime/size -> memo miss -> fresh
 # read, so the PASS1↔PASS2 drift check stays correct. Cleared at discovery start.
 _partial_hash_memo = {}
+# Keys (path, mtime_ns, size, hash_bytes) touched during THIS run — hit OR miss.
+# The cross-run cache persists ONLY these at run end, so the store stays bounded
+# to the current library (entries for vanished/renamed files age out naturally).
+_partial_hash_seen = set()
+
+partial_hash_cache_filename = os.path.join(default_plans_dir, 'partial_hash_cache.db')
+
+
+def _load_partial_hash_cache():
+    """Load the cross-run partial-hash cache into ``{memo_key: result}``.
+
+    Read-only, single-threaded (called before the parallel gather starts). Any
+    error yields an empty dict — the cache is an optimisation, never truth. The
+    memo_key carries ``mtime_ns`` + ``size``, so a changed file simply misses.
+    """
+    import sqlite3
+    out = {}
+    try:
+        conn = sqlite3.connect(partial_hash_cache_filename)
+        try:
+            rows = conn.execute(
+                "SELECT path, mtime_ns, size, hash_bytes, head, tail FROM partial_hashes"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return out
+    for path, mtime_ns, size, hash_bytes, head, tail in rows:
+        key = (path, int(mtime_ns), int(size), int(hash_bytes))
+        out[key] = {'size': int(size), 'head_sha256': head, 'tail_sha256': tail}
+    return out
+
+
+def _save_partial_hash_cache(memo, seen):
+    """Persist ONLY the entries seen this run (bounds growth), single-threaded.
+
+    Rewrites the store from scratch with the seen subset, so keys for files that
+    were not re-seen this run are dropped. Best-effort — a failure never breaks the
+    run (the cache is a pure optimisation).
+    """
+    import sqlite3
+    try:
+        os.makedirs(default_plans_dir, exist_ok=True)
+        conn = sqlite3.connect(partial_hash_cache_filename)
+        try:
+            conn.execute("DROP TABLE IF EXISTS partial_hashes")
+            conn.execute(
+                "CREATE TABLE partial_hashes ("
+                "path TEXT, mtime_ns INTEGER, size INTEGER, hash_bytes INTEGER, "
+                "head TEXT, tail TEXT, PRIMARY KEY (path, mtime_ns, size, hash_bytes))"
+            )
+            payload = []
+            for key in seen:
+                result = memo.get(key)
+                if not isinstance(result, dict):
+                    continue
+                path, mtime_ns, size, hash_bytes = key
+                payload.append((path, mtime_ns, size, hash_bytes,
+                                result.get('head_sha256'), result.get('tail_sha256')))
+            conn.executemany(
+                "INSERT OR REPLACE INTO partial_hashes "
+                "(path, mtime_ns, size, hash_bytes, head, tail) VALUES (?, ?, ?, ?, ?, ?)",
+                payload,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError) as e:
+        log.warning("Could not persist partial-hash cross-run cache: %s", e)
 
 
 def compute_partial_hashes(file_path, hash_bytes=None):
@@ -620,6 +689,9 @@ def compute_partial_hashes(file_path, hash_bytes=None):
         return None
     size = st.st_size
     memo_key = (file_path, st.st_mtime_ns, size, hash_bytes)
+    # Mark this key as seen this run (hit OR miss) so the cross-run cache persists
+    # exactly the live set. set.add is atomic under the GIL (safe from gather threads).
+    _partial_hash_seen.add(memo_key)
     cached = _partial_hash_memo.get(memo_key)
     if cached is not None:
         return cached
@@ -2698,6 +2770,18 @@ def discovery_pass(sections):
     analyze_timeout = float(cfg.get('ANALYZE_TIMEOUT_SECONDS', 60))
     compute_hashes = bool(cfg.get('PARTIAL_HASH_ENABLED'))
     _partial_hash_memo.clear()  # fresh per run (A2-02 within-run dedup)
+    _partial_hash_seen.clear()
+
+    # Opt-in (default OFF): persist partial hashes ACROSS runs so re-runs skip
+    # re-reading each file's head+tail. Loaded single-threaded here (before the
+    # parallel gather) into the same within-run memo; the mtime_ns+size in the key
+    # invalidates a changed file automatically. Zero behaviour change when off.
+    partial_hash_xrun = compute_hashes and bool(cfg.get('PARTIAL_HASH_CROSS_RUN_CACHE', False))
+    if partial_hash_xrun:
+        try:
+            _partial_hash_memo.update(_load_partial_hash_cache())
+        except Exception:
+            log.exception("partial-hash cross-run cache load failed; continuing cold")
 
     # Opt-in (default OFF): skip PASS0 analyze+poll for items whose files are
     # byte-identical to the last sane analyze. Zero behaviour change when off.
@@ -2889,6 +2973,12 @@ def discovery_pass(sections):
               % (pass0_cache_hits, total_pass0))
         log.info("PASS0 CACHE summary hits=%d attempted=%d total=%d",
                  pass0_cache_hits, pass0_attempted, total_pass0)
+
+    if partial_hash_xrun:
+        # Persist single-threaded, after the gather pool has joined. Only the keys
+        # seen this run are written, so the store stays bounded to the live library.
+        _save_partial_hash_cache(_partial_hash_memo, _partial_hash_seen)
+        log.info("PARTIAL_HASH cross-run cache persisted entries=%d", len(_partial_hash_seen))
 
     breakdown = {
         'get_dupes_seconds': round(t_get_dupes, 2),
