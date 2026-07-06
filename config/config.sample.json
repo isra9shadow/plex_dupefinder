@@ -133,6 +133,13 @@
       "shared_network": "proxynet",
       "ignore_containers": ["Configarr", "recyclarr", "watchtower"]
     },
+    "autopilot": {
+      "policy_categories": [],
+      "sources": ["autoheal", "permsdoctor"],
+      "cooldown_minutes": 60,
+      "max_flaps": 3,
+      "flap_window_hours": 24
+    },
     "shadowcheck": {
       "reports": "/mnt/cache/Downloads/DF/REPORTS",
       "window": 20

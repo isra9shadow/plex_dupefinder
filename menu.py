@@ -361,6 +361,20 @@ def backupaudit_command(image=DOCKER_IMAGE):
     )
 
 
+def autopilot_command(image=DOCKER_IMAGE):
+    """Argv to run autopilot (policy self-healing). Root + docker socket so it can
+    apply docker restarts. DRY by default here (shows the plan); the nightly cron
+    runs it with IZUMI_MODE=live to actually auto-heal per the configured policy."""
+    return _docker_run(
+        "python",
+        "run.py",
+        "autopilot",
+        image=image,
+        user=None,
+        extra_args=["-v", "/var/run/docker.sock:/var/run/docker.sock"],
+    )
+
+
 def netdoctor_command(image=DOCKER_IMAGE):
     """Argv to run the network/DNS doctor (read-only). Root + docker socket so it
     can list containers + their networks to flag the getaddrinfo ENOTFOUND cause."""
@@ -776,6 +790,13 @@ def action_netdoctor():
     _show_report("netdoctor", "Red / DNS (contenedores aislados)")
 
 
+def action_autopilot():
+    """Show what autopilot WOULD auto-heal (dry-run); real auto-heal runs in the
+    nightly cron with IZUMI_MODE=live per integrations.autopilot.policy_categories."""
+    _run(autopilot_command(image=ensure_image()))
+    _show_report("autopilot", "Autopilot (self-healing por políticas)")
+
+
 def action_full_maintenance():
     """Recommended order: extract archives, remove duplicates, then clean+organize."""
     if not confirm(
@@ -1125,6 +1146,7 @@ def action_advanced_menu():
             ("Preguntar al asistente IA (lenguaje natural)", action_ask),
             ("Estado del sistema (CPU/RAM/GPU/discos)", action_status),
             ("Proponer reinicios de servicios caídos (autoheal)", action_autoheal),
+            ("Autopilot — ver qué auto-curaría (dry-run)", action_autopilot),
             ("Refrescar Plex tras tdarr (falsos duplicados)", action_plexrefresh),
             ("Monitor de paridad (shadowcheck)", action_shadowcheck),
             ("Ver último plan del organizador", action_show_organizer_plan),
