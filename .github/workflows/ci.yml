@@ -31,12 +31,34 @@ jobs:
       - name: Tests + coverage gate (>90% on core)
         run: pytest --cov=core --cov-report=term-missing --cov-fail-under=90
 
+      - name: Module coverage (informational — floor TBD)
+        continue-on-error: true
+        run: pytest tests/unit --cov=modules --cov-report=term-missing
+
       - name: Legacy engine coverage floor (no regression below 70%)
         run: pytest tests/regression --cov=plex_dupefinder --cov-report=term-missing --cov-fail-under=70
 
       - name: Dependency audit (advisory, non-blocking)
         continue-on-error: true
         run: pip-audit -r requirements.txt
+
+  # The SSH menu / Telegram bot / sentinel launchers run on the Unraid HOST, whose
+  # Python is 3.9. They (and their whole import chain) must stay importable there —
+  # this job catches 3.10+/3.11+ regressions (StrEnum, isinstance(x, A|B), slots,
+  # datetime.UTC) BEFORE they reach the box, with NO third-party deps installed.
+  host-launchers-py39:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Import host launchers on Python 3.9 (stdlib only)
+        run: |
+          python -c "import sys; print('python', sys.version)"
+          python -c "import menu, bot, sentinel"
+          python -c "import core.configspec, core.configedit, core.cache, aictx.apply, aictx.guard, adapters.command"
+          echo 'host launchers import OK on 3.9'
 
   secret-scan:
     runs-on: ubuntu-latest
