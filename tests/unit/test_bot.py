@@ -95,14 +95,34 @@ def test_action_at_is_bounds_and_parse_safe() -> None:
 # --- keyboards -----------------------------------------------------------------
 
 
-def test_main_keyboard_has_a_button_per_action() -> None:
+def test_main_keyboard_shows_curated_featured_actions() -> None:
     kb = bot.main_keyboard()
     buttons = [b for row in kb["inline_keyboard"] for b in row]
-    assert len(buttons) == len(bot.ACTIONS)
+    # The keyboard is curated to the FEATURED one-tap flows, not every action.
+    assert len(buttons) == len(bot.FEATURED)
+    assert [b["callback_data"] for b in buttons] == [f"act:{k}" for k in bot.FEATURED]
     assert all(b["callback_data"].startswith("act:") for b in buttons)
-    # destructive actions are flagged with a warning glyph
-    organize = next(b for b in buttons if b["callback_data"] == "act:organize")
-    assert organize["text"].startswith("⚠️")
+    # Every featured key is a real action.
+    assert all(k in bot.ACTIONS for k in bot.FEATURED)
+    # A destructive featured action (maintenance) is flagged with a warning glyph.
+    maint = next(b for b in buttons if b["callback_data"] == "act:maintenance")
+    assert maint["text"].startswith("⚠️")
+
+
+def test_salud_runs_the_readonly_sweep_and_joins_summaries(monkeypatch) -> None:
+    ran: list[list[str]] = []
+    monkeypatch.setattr(bot, "_exec", lambda argv: (ran.append(argv), (0, ""))[1])
+    monkeypatch.setattr(bot, "_read_summary", lambda sub: f"[{sub}]")
+    rc, body = bot.execute_action("salud", "img")
+    assert rc == 0
+    # Five read-only health modules were run, in order.
+    joined = " ".join(a[-1] for a in ran)
+    for module in ("uptime", "dbcheck", "permsdoctor", "backupaudit", "netdoctor"):
+        assert module in joined
+    assert len(ran) == 5
+    # The combined body carries each module's summary + a human section label.
+    assert "🔌 Servicios" in body and "[uptime]" in body
+    assert "🌐 Red/DNS" in body and "[netdoctor]" in body
 
 
 def test_apply_list_keyboard_has_a_button_per_action() -> None:

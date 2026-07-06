@@ -57,24 +57,34 @@ class Action:
 ACTIONS = {
     a.key: a
     for a in (
-        Action("dupes_sim", "Duplicados — SIMULAR (no borra)", False),
-        Action("analyst", "Analista IA (logs Docker + organizer + duplicados)", False),
-        Action("sysstatus", "Estado del sistema (CPU/RAM/GPU/discos)", False),
-        Action("configdoctor", "Config-doctor (qué falta por configurar)", False),
-        Action("notifypush", "Enviar informe ahora por Telegram (push)", False),
-        Action("permsdoctor", "Doctor de permisos appdata (propone chmod/chown)", False),
-        Action("backupaudit", "Auditar backups + imágenes locales", False),
-        Action("netdoctor", "Doctor de red/DNS (getaddrinfo ENOTFOUND)", False),
-        Action("organize_plan", "Organizar — Ver plan IA (no toca nada)", False),
-        Action("health", "Healthcheck de la plataforma", False),
+        # Rápido (one-tap common flows)
+        Action("maintenance", "🧹 Mantenimiento completo (real)", True),
+        Action("salud", "🩺 Chequeo de salud (servicios·discos·DB·permisos·red)", False),
+        Action("notifypush", "📤 Enviar informe ahora (Telegram)", False),
+        # Media
+        Action("dupes_sim", "Duplicados — simular (no borra)", False),
+        Action("dupes_real", "Duplicados — mover a cuarentena (real)", True),
+        Action("organize_plan", "Organizar — ver plan IA (no toca nada)", False),
+        Action("organize", "Organizar — limpiar + mover ficheros (real)", True),
+        Action("cleanup", "Organizar — solo limpiar basura (real)", True),
         Action("extract", "Descomprimir rar/zip/7z + cuarentena (real)", True),
-        Action("organize", "Organizar — Limpiar basura + MOVER ficheros (real)", True),
-        Action("cleanup", "Organizar — Solo limpiar basura (real)", True),
-        Action("dupes_real", "Duplicados — EJECUTAR (cuarentena real)", True),
+        # Salud & IA
+        Action("analyst", "Analista IA (logs Docker + organizer + duplicados)", False),
         Action("dbrepair", "Reparar base de datos corrupta (real, con copia)", True),
-        Action("maintenance", "Mantenimiento completo (descomprimir→dupes→organizar)", True),
+        Action("permsdoctor", "Doctor de permisos appdata (propone chmod/chown)", False),
+        Action("netdoctor", "Doctor de red/DNS (getaddrinfo ENOTFOUND)", False),
+        Action("backupaudit", "Auditar backups + imágenes locales", False),
+        Action("sysstatus", "Estado del sistema (CPU/RAM/GPU/discos)", False),
+        # Config / plataforma
+        Action("configdoctor", "Config-doctor (qué falta por configurar)", False),
+        Action("health", "Healthcheck de la plataforma", False),
     )
 }
+
+# Curated buttons on the /menu keyboard — the common one-tap flows. Everything
+# else stays reachable via the grouped slash commands in HELP_TEXT (keeps the
+# button menu short and low-friction, mirroring the SSH menu's home screen).
+FEATURED = ("maintenance", "salud", "notifypush", "dupes_sim", "analyst", "dbrepair")
 
 # Slash-command aliases -> action key.
 COMMANDS = {
@@ -93,29 +103,36 @@ COMMANDS = {
     "/extract": "extract",
     "/dbrepair": "dbrepair",
     "/maintenance": "maintenance",
+    "/mantenimiento": "maintenance",
+    "/salud": "salud",
     "/health": "health",
 }
 
 HELP_TEXT = (
-    "🤖 izumi · bot de operaciones\n\n"
-    "Pulsa un botón del menú o usa estos comandos:\n"
-    "/dupes — buscar duplicados (SIMULAR, no borra)\n"
-    "/analyst — analista IA (logs Docker semana + organizer + duplicados)\n"
-    "/plan — ver plan del organizador (IA, no toca nada)\n"
-    "/extract — descomprimir + cuarentena (real)\n"
-    "/organize — limpiar basura + mover ficheros (real)\n"
-    "/cleanup — solo limpiar basura (real)\n"
-    "/dupes_real — mover duplicados a cuarentena (real)\n"
-    "/maintenance — todo: descomprimir → duplicados → organizar (real)\n"
-    "/health — healthcheck\n"
-    "/estado — estado del sistema (CPU/RAM/GPU/discos/contenedores)\n"
+    "🤖 izumi · ¿qué hacemos?\n\n"
+    "Pulsa un botón (lo más usado) o escribe un comando:\n\n"
+    "⚡ Rápido\n"
+    "/mantenimiento — todo: descomprimir → duplicados → organizar (real)\n"
+    "/salud — chequeo de salud (servicios·discos·DB·permisos·red)\n"
+    "/informe — enviar el informe consolidado por Telegram\n\n"
+    "🎬 Media\n"
+    "/dupes — duplicados: simular (no borra)\n"
+    "/dupes_real — duplicados: mover a cuarentena (real)\n"
+    "/plan — organizar: ver plan IA (no toca nada)\n"
+    "/organize — organizar: limpiar + mover ficheros (real)\n"
+    "/cleanup — organizar: solo limpiar basura (real)\n"
+    "/extract — descomprimir rar/zip/7z + cuarentena (real)\n\n"
+    "🩺 Salud & IA\n"
+    "/analyst — analista IA (logs Docker + organizer + duplicados)\n"
+    "/apply — aplicar arreglos IA (allow-list segura, con confirmación)\n"
+    "/dbrepair — reparar base de datos corrupta (real, con copia)\n"
+    "/permisos — permisos appdata (propone chmod/chown para /apply)\n"
+    "/red — red/DNS (contenedores aislados, ENOTFOUND)\n"
+    "/backups — frescura de backups + imágenes locales\n"
+    "/estado — estado del sistema (CPU/RAM/GPU/discos)\n\n"
+    "⚙️ Config\n"
     "/configdoctor — qué variables/rutas faltan por configurar\n"
-    "/informe — enviar ahora el informe consolidado por Telegram\n"
-    "/permisos — revisar permisos de appdata (propone chmod/chown para /apply)\n"
-    "/backups — auditar frescura de backups + imágenes locales\n"
-    "/red — diagnosticar red/DNS (contenedores aislados, ENOTFOUND)\n"
-    "/dbrepair — reparar base de datos corrupta (real, copia a cuarentena)\n"
-    "/apply — aplicar soluciones IA (allow-list segura, con confirmación)\n"
+    "/health — healthcheck de la plataforma\n"
     "/status — estado del bot\n\n"
     "Las acciones REALES piden confirmación antes de ejecutarse."
 )
@@ -199,10 +216,17 @@ def _action_at(actions, index_str):
 
 
 def main_keyboard():
-    """Inline keyboard mirroring the menu (one button per row; labels are long)."""
+    """Curated inline keyboard: only the FEATURED one-tap flows (short, low-friction).
+    Everything else is reachable via the grouped slash commands in /help."""
     rows = [
-        [{"text": ("⚠️ " if act.destructive else "") + act.label, "callback_data": f"act:{act.key}"}]
-        for act in ACTIONS.values()
+        [
+            {
+                "text": ("⚠️ " if ACTIONS[k].destructive else "") + ACTIONS[k].label,
+                "callback_data": f"act:{k}",
+            }
+        ]
+        for k in FEATURED
+        if k in ACTIONS
     ]
     return {"inline_keyboard": rows}
 
@@ -399,6 +423,27 @@ def execute_action(key, image):
     if key == "netdoctor":
         _exec(menu.netdoctor_command(image=image))
         return 0, (_read_summary("netdoctor") or "(sin informe de red)")
+    if key == "salud":
+        # One-tap read-only health sweep, mirroring the SSH menu's flagship check.
+        for cmd in (
+            menu.uptime_command,
+            menu.dbcheck_command,
+            menu.permsdoctor_command,
+            menu.backupaudit_command,
+            menu.netdoctor_command,
+        ):
+            _exec(cmd(image=image))
+        parts = [
+            ("🔌 Servicios", "uptime"),
+            ("🗄️ Bases de datos", "dbcheck"),
+            ("🔐 Permisos", "permsdoctor"),
+            ("💾 Backups", "backupaudit"),
+            ("🌐 Red/DNS", "netdoctor"),
+        ]
+        body = "\n\n———\n\n".join(
+            f"{name}\n\n" + (_read_summary(sub) or "(sin datos)") for name, sub in parts
+        )
+        return 0, body
     if key == "health":
         return _exec(menu.health_command(image=image))
     return 1, f"acción desconocida: {key}"
