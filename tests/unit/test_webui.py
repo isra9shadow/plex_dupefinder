@@ -64,6 +64,26 @@ def test_basic_auth_validates_credentials() -> None:
     assert webui.check_basic_auth("Bearer x", "isra", "secret") is False  # wrong scheme
 
 
+def test_status_snapshot_empty_when_no_db(tmp_path) -> None:
+    snap = webui.status_snapshot(str(tmp_path))
+    assert snap == {"ok": True, "modules": [], "failing": []}
+
+
+def test_status_snapshot_reports_failing_modules(tmp_path) -> None:
+    from core.metrics import MetricsStore
+
+    db = tmp_path / "cache" / "metrics.db"
+    with MetricsStore(db) as store:
+        store.record("r1", "uptime", {"down": 1.0}, ok=False, failures=2)
+        store.record("r1", "diskwatch", {"temp": 40.0}, ok=True, failures=0)
+    snap = webui.status_snapshot(str(tmp_path))
+    assert snap["ok"] is False
+    assert snap["failing"] == ["uptime"]
+    mods = {m["module"]: m for m in snap["modules"]}  # type: ignore[union-attr]
+    assert mods["uptime"]["failures"] == 2 and mods["uptime"]["ok"] is False
+    assert mods["diskwatch"]["ok"] is True
+
+
 def test_export_markdown_concatenates_summaries(tmp_path) -> None:
     (tmp_path / "uptime").mkdir()
     (tmp_path / "uptime" / "summary.md").write_text("servicios ok", encoding="utf-8")

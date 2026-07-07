@@ -96,6 +96,33 @@ def check_token(token: str, *, expected_token: str) -> tuple[bool, int, str]:
     return True, 200, "ok"
 
 
+def status_snapshot(directory: str) -> dict[str, object]:
+    """Machine-readable health snapshot from the metrics store (for external pulls).
+
+    ``{ok, modules:[{module, ok, failures}], failing:[names]}`` — lets an external
+    guardian fetch WHAT is wrong, not just whether the server is up.
+    """
+    from pathlib import Path
+
+    from core.metrics import MetricsStore
+
+    db = Path(directory) / "cache" / "metrics.db"
+    if not db.is_file():
+        return {"ok": True, "modules": [], "failing": []}
+    with MetricsStore(db) as store:
+        status = store.latest_status()
+    modules = [
+        {
+            "module": str(s.get("module")),
+            "ok": bool(s.get("ok")),
+            "failures": int(s.get("failures") or 0),
+        }  # type: ignore[arg-type]
+        for s in status
+    ]
+    failing = [str(m["module"]) for m in modules if not m["ok"]]
+    return {"ok": not failing, "modules": modules, "failing": failing}
+
+
 def export_markdown(directory: str) -> str:
     """Concatenate every module's summary.md into one downloadable report (pure)."""
     from pathlib import Path
@@ -204,7 +231,11 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._auth_ok():
             return
-        if self.path.split("?", 1)[0] == "/api/export":
+        route = self.path.split("?", 1)[0]
+        if route == "/api/status":
+            self._json(200, status_snapshot(self.directory))
+            return
+        if route == "/api/export":
             body = export_markdown(self.directory).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/markdown; charset=utf-8")

@@ -171,6 +171,11 @@ a{color:var(--accent)}
 .fx code{background:var(--plane);padding:2px 6px;border-radius:5px;font:12px ui-monospace,monospace}
 .fx button{margin-left:auto;padding:5px 10px;border:1px solid var(--ring);border-radius:7px;
   cursor:pointer;background:var(--surface);color:var(--ink);font:12px system-ui}
+.cf{margin-top:8px}
+.fixai{padding:5px 10px;border:1px solid var(--ring);border-radius:7px;cursor:pointer;
+  background:var(--surface);color:var(--ink);font:12px system-ui}
+.aians{display:none;margin-top:8px;padding-top:6px;border-top:1px solid var(--grid);
+  font-size:12px;color:var(--ink2);white-space:pre-wrap}
 """
 
 _JS = """
@@ -220,6 +225,18 @@ document.querySelectorAll('[data-cmd]').forEach(b=>b.addEventListener('click',as
     const j=await r.json(); alert(j.message||'');
     if(j.ok){location.reload();}else{b.disabled=false;}
   }catch(e){alert('error de red'); b.disabled=false;}
+}));
+document.querySelectorAll('.fixai').forEach(b=>b.addEventListener('click',async()=>{
+  const mod=b.dataset.mod, box=document.getElementById('ai-'+mod);
+  const t=tok(); if(!t)return; b.disabled=true;
+  box.style.display='block'; box.textContent='pensando…';
+  const qq='¿Cómo arreglo el problema de '+mod+'? Da el comando exacto '
+    +'(docker restart/chmod/chown) si aplica, si no explica el paso.';
+  try{const r=await fetch('/api/ask',{method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({question:qq,token:t})});
+    const j=await r.json(); box.textContent=j.message||'(sin respuesta)';
+  }catch(e){box.textContent='error de red';} b.disabled=false;
 }));
 const asb=document.getElementById('asb');
 if(asb){asb.addEventListener('click',async()=>{
@@ -447,10 +464,17 @@ def _status_tiles(
 def _one_card(module: str, summary: str, status: dict[str, str]) -> str:
     m = html.escape(module)
     cls = card_severity(summary, status.get(module, ""))
+    # For a problem card, offer an on-demand AI fix suggestion (Ollama via /api/ask).
+    fix = ""
+    if cls in ("bad", "warn"):
+        fix = (
+            f'<div class="cf"><button class="fixai" data-mod="{m}">🔧 arreglo IA</button></div>'
+            f'<div class="aians" id="ai-{m}"></div>'
+        )
     return (
         f'<div class="card {cls}" data-name="{m.lower()}"><h3>{m}'
         f'<a href="{m}/">ver informe →</a></h3>'
-        f'<div class="b">{md_lite(summary)}</div></div>'
+        f'<div class="b">{md_lite(summary)}</div>{fix}</div>'
     )
 
 

@@ -38,6 +38,19 @@ def test_render_has_kpis_ai_filter_and_severity() -> None:
     assert "id=age" in out  # smart auto-refresh (no full meta-refresh flicker)
 
 
+def test_render_bad_card_has_ai_fix_button() -> None:
+    status = [{"module": "dbcheck", "ok": False, "failures": 1, "ts": "t"}]
+    out = webdashboard.render_html(status, {}, [("dbcheck", "# Dbcheck\n- 1 corrupta")], generated="n")
+    assert 'class="fixai" data-mod="dbcheck"' in out  # per-card AI fix button
+    assert 'id="ai-dbcheck"' in out  # inline answer target
+
+
+def test_render_good_card_has_no_ai_fix_button() -> None:
+    status = [{"module": "uptime", "ok": True, "failures": 0, "ts": "t"}]
+    out = webdashboard.render_html(status, {}, [("uptime", "todo arriba")], generated="n")
+    assert 'data-mod="uptime"' not in out  # healthy cards don't offer a fix button
+
+
 def test_render_empty() -> None:
     assert "Sin informes todavía" in webdashboard.render_html([], {}, [], generated="now")
 
