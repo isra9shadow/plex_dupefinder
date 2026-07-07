@@ -121,3 +121,35 @@ def test_sweep_reports_individual_service_when_server_up() -> None:
 
 def sweep_n(server, targets, state, *, down, threshold):
     return sentinel.sweep(server, targets, state, threshold=threshold, prober=_prober(down))
+
+
+# --- panel status pull ----------------------------------------------------------
+
+
+def test_diff_module_status_alerts_new_failures_with_count() -> None:
+    snap = {
+        "modules": [
+            {"module": "dbcheck", "ok": False, "failures": 2},
+            {"module": "uptime", "ok": True, "failures": 0},
+        ]
+    }
+    failing, msgs = sentinel.diff_module_status(set(), snap)
+    assert failing == {"dbcheck"}
+    assert len(msgs) == 1 and "dbcheck" in msgs[0] and "2 fallos" in msgs[0]
+
+
+def test_diff_module_status_no_repeat_and_recovery() -> None:
+    snap_bad = {"modules": [{"module": "dbcheck", "ok": False, "failures": 1}]}
+    failing, _ = sentinel.diff_module_status(set(), snap_bad)
+    # same failure next sweep -> no new alert (guardian isn't spammed every minute)
+    failing, msgs = sentinel.diff_module_status(failing, snap_bad)
+    assert msgs == []
+    # module recovers -> one recovery line
+    snap_ok = {"modules": [{"module": "dbcheck", "ok": True, "failures": 0}]}
+    failing, msgs = sentinel.diff_module_status(failing, snap_ok)
+    assert failing == set() and "recuperado" in msgs[0].lower()
+
+
+def test_diff_module_status_handles_garbage() -> None:
+    assert sentinel.diff_module_status(set(), {}) == (set(), [])
+    assert sentinel.diff_module_status(set(), {"modules": None}) == (set(), [])

@@ -24,6 +24,10 @@ Config (env / .env next to this file):
   IZUMI_SENTINEL_INTERVAL    seconds between sweeps (default 60)
   IZUMI_SENTINEL_FAILS       consecutive failures before a DOWN alert (default 3)
   IZUMI_SENTINEL_TIMEOUT     per-probe timeout in seconds (default 8)
+  IZUMI_SENTINEL_PANEL       optional webui base URL (e.g. http://192.168.6.62:8888);
+                             when set and the server is up, the sentinel pulls
+                             ``/api/status`` and tells you WHICH modules are failing
+  IZUMI_SENTINEL_PANEL_AUTH  optional "user:pass" for the panel's HTTP Basic Auth
 
 Run on Windows (stays open):   python sentinel.py
 Background / at logon:         pythonw sentinel.py   (or a Scheduled Task)
@@ -31,6 +35,7 @@ Background / at logon:         pythonw sentinel.py   (or a Scheduled Task)
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import socket
@@ -165,6 +170,59 @@ def format_event(name, event, *, is_server=False):
     return ""
 
 
+# --- panel status pull (know WHAT failed, not just that the box is up) ----------
+
+
+def format_module_alert(module, failures):
+    """Human Telegram line for a module that started failing (with its count)."""
+    n = _int(failures, 0)
+    detail = f" ({n} fallo{'s' if n != 1 else ''})" if n else ""
+    return f"⚠️ Módulo con fallos: {module}{detail} — pídele el arreglo en el panel/bot."
+
+
+def diff_module_status(known_failing, snapshot):
+    """Compare a ``/api/status`` snapshot against already-alerted modules (pure).
+
+    ``snapshot`` is the JSON from ``webui``'s ``/api/status`` (``{modules:[{module,
+    ok, failures}], ...}``). Returns ``(failing_now, messages)``: one message per
+    NEWLY failing module (with its failure count) and one per recovered module, so
+    the guardian is told exactly what broke without re-alerting every sweep.
+    """
+    modules = snapshot.get("modules") if isinstance(snapshot, dict) else None
+    by_name: dict[str, dict[str, object]] = {}
+    for item in modules or []:
+        if isinstance(item, dict) and item.get("module"):
+            by_name[str(item["module"])] = item
+    failing_now = {name for name, item in by_name.items() if not item.get("ok")}
+    messages: list[str] = []
+    for name in sorted(failing_now - set(known_failing)):
+        messages.append(format_module_alert(name, by_name[name].get("failures")))
+    for name in sorted(set(known_failing) - failing_now):
+        messages.append(f"🟢 Módulo recuperado: {name}")
+    return failing_now, messages
+
+
+def fetch_status(panel_url, *, timeout, auth=None):
+    """GET ``<panel_url>/api/status`` and return the parsed dict, or None on failure.
+
+    ``auth`` is an optional ``"user:pass"`` for the panel's HTTP Basic Auth.
+    """
+    url = panel_url.rstrip("/") + "/api/status"
+    request = urllib.request.Request(url, method="GET")
+    if auth:
+        request.add_header(
+            "Authorization", "Basic " + base64.b64encode(auth.encode("utf-8")).decode("ascii")
+        )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if response.status != 200:
+                return None
+            data = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 # --- probes (I/O) ---------------------------------------------------------------
 
 
@@ -253,12 +311,18 @@ def _int(value, default):
         return default
 
 
-def serve(token, chat_id, server, targets, *, interval, threshold, timeout):  # pragma: no cover
+def serve(  # pragma: no cover
+    token, chat_id, server, targets, *, interval, threshold, timeout, panel=None, panel_auth=None
+):
     names = [server.name] if server else []
     names += [t.name for t in targets]
     print(f"[sentinel] vigilando {len(names)} objetivo(s): {', '.join(names)}")
-    send_telegram(token, chat_id, f"👁️ izumi sentinel arrancado — vigilando: {', '.join(names)}")
+    hint = f" (+ panel {panel})" if panel else ""
+    send_telegram(
+        token, chat_id, f"👁️ izumi sentinel arrancado — vigilando: {', '.join(names)}{hint}"
+    )
     state: dict[str, dict[str, object]] = {}
+    known_failing: set[str] = set()
 
     def prober(target):
         return probe(target, timeout=timeout)
@@ -268,6 +332,13 @@ def serve(token, chat_id, server, targets, *, interval, threshold, timeout):  # 
             state, messages = sweep(server, targets, state, threshold=threshold, prober=prober)
             for message in messages:
                 send_telegram(token, chat_id, message)
+            server_down = bool(server and state.get(server.name, {}).get("down"))
+            if panel and not server_down:  # server up → ask WHAT is failing inside it
+                snapshot = fetch_status(panel, timeout=timeout, auth=panel_auth)
+                if snapshot is not None:
+                    known_failing, module_msgs = diff_module_status(known_failing, snapshot)
+                    for message in module_msgs:
+                        send_telegram(token, chat_id, message)
         except Exception as exc:  # a bad sweep must never kill the watchdog
             print(f"[sentinel] error en la pasada: {exc}")
         time.sleep(interval)
@@ -300,6 +371,8 @@ def main():  # pragma: no cover - entrypoint wiring
         interval=_float(get_conf("IZUMI_SENTINEL_INTERVAL", env_file), _DEFAULT_INTERVAL),
         threshold=_int(get_conf("IZUMI_SENTINEL_FAILS", env_file), _DEFAULT_FAILS),
         timeout=_float(get_conf("IZUMI_SENTINEL_TIMEOUT", env_file), _DEFAULT_TIMEOUT),
+        panel=get_conf("IZUMI_SENTINEL_PANEL", env_file, default="") or None,
+        panel_auth=get_conf("IZUMI_SENTINEL_PANEL_AUTH", env_file, default="") or None,
     )
 
 
