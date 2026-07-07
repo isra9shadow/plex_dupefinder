@@ -23,11 +23,31 @@ container, because it spawns `docker run` with the repo's host paths).
 Logs: `<repo>/bot.out` (on cache, never `/var/log`). Stop:
 `pkill -f run-bot.sh; pkill -f 'python3 bot.py'`.
 
-## Web dashboard (read-only)
+## Web dashboard
 
-`webui.py` serves the reports dir (dashboard + JSON) over HTTP. Run it as a
-container: `docker compose -f deploy/docker-compose.yml up -d` → `http://tower:8888`.
-The `webdashboard` module regenerates `reports/index.html` each health/nightly run.
+`webui.py` serves the reports dir (dashboard + JSON). Read-only container:
+`docker compose -f deploy/docker-compose.yml up -d` → `http://tower:8888`. The
+`webdashboard` module regenerates `index.html` each health/nightly run.
+
+### Optional: interactive buttons (opt-in, token-guarded)
+
+To let the panel's "Ejecutar salud" / "Refrescar panel" buttons trigger read-only
+runs, start webui with a token + the docker socket + a **writable** reports mount
+(only read-only modules can be triggered — never apply/dbrepair):
+
+```bash
+REPO=/mnt/cache/appdata/scripts/plex_dupefinder
+REPORTS=$(python3 -c "import json;print(json.load(open('$REPO/config/config.json'))['reporting']['dir'])")
+docker rm -f izumi-webui 2>/dev/null
+docker run -d --name izumi-webui --restart unless-stopped \
+  -e IZUMI_WEB_TOKEN="pon-un-token-largo" \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$REPO:/app" -v "$REPORTS:/reports" -v /mnt/user:/mnt/user -v /mnt/cache:/mnt/cache \
+  -w /app -p 8888:8888 izumi-organizer:local python webui.py --dir /reports --port 8888
+```
+
+The browser asks for the token once (kept in localStorage, never in the page). No
+`IZUMI_WEB_TOKEN` → the API is off and the server stays purely read-only.
 
 ## MCP server (external assistant: Claude Desktop / Home Assistant)
 

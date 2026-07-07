@@ -119,6 +119,9 @@ h2{letter-spacing:.05em}
 .tools{display:flex;gap:8px;margin:6px 0 2px}
 .tools input{flex:1;max-width:320px;padding:8px 10px;border:1px solid var(--ring);border-radius:8px;
   background:var(--surface);color:var(--ink);font:14px system-ui}
+.tools button{padding:8px 12px;border:1px solid var(--ring);border-radius:8px;cursor:pointer;
+  background:var(--surface);color:var(--ink);font:13px system-ui}
+.tools button:disabled{opacity:.5;cursor:progress}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
 .tile{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:14px 16px}
 .tile .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -146,12 +149,24 @@ th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--grid)}
 th{color:var(--muted);font-weight:600}
 """
 
-_FILTER_JS = """
+_JS = """
 <script>
 const q=document.getElementById('q');
 if(q){q.addEventListener('input',()=>{const v=q.value.toLowerCase();
   document.querySelectorAll('.card').forEach(c=>{
     c.style.display=c.dataset.name.includes(v)?'':'none';});});}
+document.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',async()=>{
+  let t=localStorage.getItem('izumi_tok')||prompt('Token (IZUMI_WEB_TOKEN):');
+  if(!t)return; localStorage.setItem('izumi_tok',t);
+  const o=b.textContent; b.disabled=true; b.textContent='ejecutando…';
+  try{const r=await fetch('/api/run',{method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({action:b.dataset.act,token:t})});
+    const j=await r.json();
+    if(!j.ok && /token/.test(j.message||'')) localStorage.removeItem('izumi_tok');
+    b.textContent=o; b.disabled=false; if(j.ok){location.reload();}else{alert(j.message||'error');}
+  }catch(e){b.textContent=o; b.disabled=false; alert('error de red');}
+});});
 </script>
 """
 
@@ -364,7 +379,11 @@ def render_html(
         sections.append(_kpis(status))
         sections.append(f'<h2>Estado</h2><div class="tiles">{_status_tiles(status, sparks)}</div>')
     if cards:
-        sections.append('<div class="tools"><input id=q placeholder="filtrar módulos…"></div>')
+        sections.append(
+            '<div class="tools"><input id=q placeholder="filtrar módulos…">'
+            '<button data-act="health">▶ Ejecutar salud</button>'
+            '<button data-act="webdashboard">↻ Refrescar panel</button></div>'
+        )
         sections.append(f"<h2>Detalle por módulo</h2>{_grouped_cards(cards, severity)}")
     if not status and not cards:
         sections.append(
@@ -377,7 +396,7 @@ def render_html(
             "<th>Fallos</th><th>Última ejecución</th></tr></thead>"
             f"<tbody>{table_rows}</tbody></table>"
         )
-    sections.append(_FILTER_JS)
+    sections.append(_JS)
     sections.append("</div></body></html>")
     return "".join(sections)
 
