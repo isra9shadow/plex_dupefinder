@@ -12,6 +12,9 @@ server stays purely read-only. Only read-only actions are allowed (no apply/dbre
 for that the API needs the container run with the docker socket + a writable reports
 mount.
 
+Optional HTTP Basic Auth over the WHOLE panel: set ``IZUMI_WEB_USER`` + ``IZUMI_WEB_PASS``
+(for exposing it beyond the LAN); unset = no auth.
+
     python webui.py [--dir reports] [--port 8888] [--host 0.0.0.0]
 
 If ``--dir`` is omitted it reads ``reporting.dir`` from ``config/config.json``. Base
@@ -21,6 +24,8 @@ server is stdlib-only and 3.9-safe (the API imports the platform lazily, in-cont
 from __future__ import annotations
 
 import argparse
+import base64
+import hmac
 import http.server
 import json
 import os
@@ -62,6 +67,24 @@ def check_request(action: str, token: str, *, expected_token: str) -> tuple[bool
     if action not in _ALLOWED_ACTIONS:
         return False, 400, f"acción no permitida: {action}"
     return True, 200, "ok"
+
+
+def check_basic_auth(header: str, user: str, password: str) -> bool:
+    """Validate an HTTP ``Authorization: Basic`` header against user/password (pure).
+
+    Constant-time compare. If both user and password are empty, auth is disabled
+    (returns True). Used to gate the WHOLE panel when IZUMI_WEB_USER/PASS are set.
+    """
+    if not user and not password:
+        return True
+    if not header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:].strip()).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    got_user, _, got_pw = decoded.partition(":")
+    return hmac.compare_digest(got_user, user) and hmac.compare_digest(got_pw, password)
 
 
 def check_token(token: str, *, expected_token: str) -> tuple[bool, int, str]:
@@ -164,7 +187,23 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _auth_ok(self) -> bool:
+        """Optional HTTP Basic Auth over the whole panel (opt-in via IZUMI_WEB_USER/PASS)."""
+        if check_basic_auth(
+            self.headers.get("Authorization", ""),
+            os.environ.get("IZUMI_WEB_USER", ""),
+            os.environ.get("IZUMI_WEB_PASS", ""),
+        ):
+            return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="izumi"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
     def do_GET(self) -> None:
+        if not self._auth_ok():
+            return
         if self.path.split("?", 1)[0] == "/api/export":
             body = export_markdown(self.directory).encode("utf-8")
             self.send_response(200)
@@ -177,6 +216,8 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:
+        if not self._auth_ok():
+            return
         path = self.path.split("?", 1)[0]
         if path not in ("/api/run", "/api/ask", "/api/apply"):
             self._json(404, {"ok": False, "message": "not found"})

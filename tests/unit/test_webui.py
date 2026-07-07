@@ -49,6 +49,21 @@ def test_check_token_ask_apply() -> None:
     assert webui.check_token("s", expected_token="")[0] is False  # API off
 
 
+def test_basic_auth_disabled_when_unset() -> None:
+    assert webui.check_basic_auth("", "", "") is True  # no user/pass → auth off
+
+
+def test_basic_auth_validates_credentials() -> None:
+    import base64
+
+    good = "Basic " + base64.b64encode(b"isra:secret").decode()
+    assert webui.check_basic_auth(good, "isra", "secret") is True
+    bad = "Basic " + base64.b64encode(b"isra:wrong").decode()
+    assert webui.check_basic_auth(bad, "isra", "secret") is False
+    assert webui.check_basic_auth("", "isra", "secret") is False  # missing header
+    assert webui.check_basic_auth("Bearer x", "isra", "secret") is False  # wrong scheme
+
+
 def test_export_markdown_concatenates_summaries(tmp_path) -> None:
     (tmp_path / "uptime").mkdir()
     (tmp_path / "uptime" / "summary.md").write_text("servicios ok", encoding="utf-8")
