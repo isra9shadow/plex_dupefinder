@@ -21,6 +21,28 @@ import os
 import socketserver
 import sys
 from functools import partial
+from io import BytesIO
+
+_NO_INDEX_HTML = (
+    b"<!doctype html><meta charset=utf-8>"
+    b"<style>body{font:15px system-ui;margin:3rem;color:#333}</style>"
+    b"<h2>izumi</h2><p>El panel a\xc3\xban no est\xc3\xa1 generado.</p>"
+    b"<p>Ejecuta el chequeo de salud una vez:</p>"
+    b"<pre>python run.py health</pre>"
+    b'<p><a href="/">recargar</a></p>'
+)
+
+
+class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves index.html at a directory; never dumps a raw file listing."""
+
+    def list_directory(self, path: str):  # type: ignore[override]
+        # Reached only when a directory has no index.html — show a hint, not a dump.
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(_NO_INDEX_HTML)))
+        self.end_headers()
+        return BytesIO(_NO_INDEX_HTML)
 
 
 def default_reports_dir() -> str:
@@ -52,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     directory = args.dir or default_reports_dir()
     if not os.path.isdir(directory):
         os.makedirs(directory, exist_ok=True)
-    handler = partial(http.server.SimpleHTTPRequestHandler, directory=directory)
+    handler = partial(_DashboardHandler, directory=directory)
     print(f"izumi web UI serving {directory} on http://{args.host}:{args.port}", file=sys.stderr)
     with socketserver.TCPServer((args.host, args.port), handler) as httpd:
         try:
