@@ -23,8 +23,33 @@ container, because it spawns `docker run` with the repo's host paths).
 Logs: `<repo>/bot.out` (on cache, never `/var/log`). Stop:
 `pkill -f run-bot.sh; pkill -f 'python3 bot.py'`.
 
-## Coming (later phases)
+## Web dashboard (read-only)
 
-The web dashboard (`webui.py`) and MCP server (`mcp_server.py`) are read-only /
-in-process and CAN run as containers; a `docker-compose.yml` with
-`restart: unless-stopped` will be added here when they land.
+`webui.py` serves the reports dir (dashboard + JSON) over HTTP. Run it as a
+container: `docker compose -f deploy/docker-compose.yml up -d` → `http://tower:8888`.
+The `webdashboard` module regenerates `reports/index.html` each health/nightly run.
+
+## MCP server (external assistant: Claude Desktop / Home Assistant)
+
+`mcp_server.py` exposes izumi's read-only doctors + the guard-vetted apply as MCP
+tools over stdio (stdlib JSON-RPC, no extra deps). ``apply_fix`` re-vets every
+command against the same allow-list, so an external agent can't run anything outside
+it. Point your MCP client at a `docker run` that launches it — e.g. Claude Desktop
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "izumi": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i",
+        "-v", "/var/run/docker.sock:/var/run/docker.sock",
+        "-v", "/mnt/cache/appdata/scripts/plex_dupefinder:/app",
+        "-v", "/mnt/user:/mnt/user", "-v", "/mnt/cache:/mnt/cache",
+        "-w", "/app", "izumi-organizer:local", "python", "mcp_server.py"]
+    }
+  }
+}
+```
+
+Then ask the assistant to run a doctor, list fixes, or apply an allow-listed one.
