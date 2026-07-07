@@ -393,6 +393,16 @@ def shadowcheck_command(image=DOCKER_IMAGE):
     return _docker_run("python", "run.py", "shadowcheck", image=image)
 
 
+def certdoctor_command(image=DOCKER_IMAGE):
+    """Argv to run the TLS certificate expiry doctor (read-only; opens TLS probes)."""
+    return _docker_run("python", "run.py", "certdoctor", image=image, user=None)
+
+
+def capacitydoctor_command(image=DOCKER_IMAGE):
+    """Argv to run the disk capacity/forecast doctor (read-only; reads /mnt usage)."""
+    return _docker_run("python", "run.py", "capacitydoctor", image=image, user=None)
+
+
 def assistant_command(question, image=DOCKER_IMAGE):
     """Argv to ask the NL assistant: it routes to read-only doctors, runs them and
     answers with the local LLM. Root + docker socket so the routed modules
@@ -797,6 +807,18 @@ def action_autopilot():
     _show_report("autopilot", "Autopilot (self-healing por políticas)")
 
 
+def action_certdoctor():
+    """Check TLS certificate expiry for the configured endpoints (read-only)."""
+    _run(certdoctor_command(image=ensure_image()))
+    _show_report("certdoctor", "Certificados TLS (caducidad)")
+
+
+def action_capacitydoctor():
+    """Disk usage + days-to-full forecast for the configured paths (read-only)."""
+    _run(capacitydoctor_command(image=ensure_image()))
+    _show_report("capacitydoctor", "Capacidad de disco (previsión)")
+
+
 def action_full_maintenance():
     """Recommended order: extract archives, remove duplicates, then clean+organize."""
     if not confirm(
@@ -1147,6 +1169,8 @@ def action_advanced_menu():
             ("Estado del sistema (CPU/RAM/GPU/discos)", action_status),
             ("Proponer reinicios de servicios caídos (autoheal)", action_autoheal),
             ("Autopilot — ver qué auto-curaría (dry-run)", action_autopilot),
+            ("Doctor de certificados TLS (caducidad)", action_certdoctor),
+            ("Doctor de capacidad de disco (previsión)", action_capacitydoctor),
             ("Refrescar Plex tras tdarr (falsos duplicados)", action_plexrefresh),
             ("Monitor de paridad (shadowcheck)", action_shadowcheck),
             ("Ver último plan del organizador", action_show_organizer_plan),

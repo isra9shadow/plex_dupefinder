@@ -54,6 +54,8 @@ _DEFAULT_SOURCES = (
     "permsdoctor",
     "backupaudit",
     "netdoctor",
+    "certdoctor",
+    "capacitydoctor",
     "autoheal",
     "analyst",
     "logwatch",
