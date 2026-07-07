@@ -178,7 +178,7 @@ a{color:var(--accent)}
   font-size:12px;color:var(--ink2);white-space:pre-wrap}
 """
 
-_JS = """
+_JS = r"""
 <script>
 const q=document.getElementById('q');
 if(q){q.addEventListener('input',()=>{const v=q.value.toLowerCase();
@@ -217,15 +217,30 @@ setInterval(async()=>{try{
 }catch(e){}},30000);
 function tok(){let t=localStorage.getItem('izumi_tok')||prompt('Token (IZUMI_WEB_TOKEN):');
   if(t)localStorage.setItem('izumi_tok',t); return t;}
-document.querySelectorAll('[data-cmd]').forEach(b=>b.addEventListener('click',async()=>{
-  if(!confirm('Aplicar: '+b.dataset.cmd+' ?'))return; const t=tok(); if(!t)return; b.disabled=true;
+async function applyCmd(cmd,btn){
+  if(!confirm('Aplicar: '+cmd+' ?'))return; const t=tok(); if(!t)return; btn.disabled=true;
   try{const r=await fetch('/api/apply',{method:'POST',
     headers:{'content-type':'application/json'},
-    body:JSON.stringify({command:b.dataset.cmd,token:t})});
+    body:JSON.stringify({command:cmd,token:t})});
     const j=await r.json(); alert(j.message||'');
-    if(j.ok){location.reload();}else{b.disabled=false;}
-  }catch(e){alert('error de red'); b.disabled=false;}
-}));
+    if(j.ok){location.reload();}else{btn.disabled=false;}
+  }catch(e){alert('error de red'); btn.disabled=false;}
+}
+document.querySelectorAll('[data-cmd]').forEach(b=>
+  b.addEventListener('click',()=>applyCmd(b.dataset.cmd,b)));
+// Pull the first allow-list-shaped command out of the assistant's free text so it can
+// be applied in one click. The server re-vets it against aictx.apply, so a loose match
+// here can never run anything outside the allow-list.
+function fixcmd(txt){
+  const pats=[
+    /docker\s+(?:restart|start|stop)\s+[A-Za-z0-9][\w.-]*/,
+    /chmod\s+[0-7]{3,4}\s+\/\S+/,
+    /chown\s+[A-Za-z0-9][\w.-]*(?::[A-Za-z0-9][\w.-]*)?\s+\/\S+/,
+    /mkdir(?:\s+-p)?\s+\/\S+/,
+  ];
+  for(const p of pats){const m=(txt||'').match(p); if(m)return m[0].trim();}
+  return null;
+}
 document.querySelectorAll('.fixai').forEach(b=>b.addEventListener('click',async()=>{
   const mod=b.dataset.mod, box=document.getElementById('ai-'+mod);
   const t=tok(); if(!t)return; b.disabled=true;
@@ -236,6 +251,11 @@ document.querySelectorAll('.fixai').forEach(b=>b.addEventListener('click',async(
     headers:{'content-type':'application/json'},
     body:JSON.stringify({question:qq,token:t})});
     const j=await r.json(); box.textContent=j.message||'(sin respuesta)';
+    const cmd=fixcmd(j.message);
+    if(cmd){const ab=document.createElement('button');
+      ab.className='fixai'; ab.textContent='▶ aplicar: '+cmd; ab.style.marginTop='6px';
+      ab.addEventListener('click',()=>applyCmd(cmd,ab));
+      box.appendChild(document.createElement('br')); box.appendChild(ab);}
   }catch(e){box.textContent='error de red';} b.disabled=false;
 }));
 const asb=document.getElementById('asb');
