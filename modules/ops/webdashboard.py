@@ -1,14 +1,13 @@
-"""Web dashboard — one HTML page with the whole homelab's health at a glance.
+"""Web dashboard — one clear HTML page with the whole homelab's health.
 
-Read-only module: renders ``reports/index.html`` from (a) the metrics store —
-per-module ok/failures status tiles + a sparkline trend — and (b) each module's
-latest ``summary.md`` as a detail card. ``webui.py`` serves it so you open the panel
-in a browser on the LAN. The page auto-refreshes so it stays current.
+Read-only module. Renders ``reports/index.html`` from:
+  * the metrics store — per-module ok/failures status + a sparkline trend,
+  * each module's latest ``summary.md`` (markdown-rendered, colour-coded by status),
+  * an optional AI **executive summary** (Ollama) in plain Spanish at the top.
 
-Design (dataviz skill): status colours are the reserved good/critical palette paired
-with an icon + label (never colour alone); sparklines are a single thin 2px blue
-series with no legend; light + dark are defined against their own surfaces; a table
-view backs the tiles for accessibility.
+Plus a KPI row and a client-side filter box. ``webui.py`` serves it; the page
+auto-refreshes. Design follows the dataviz skill (reserved status colours + icon +
+label, thin single-series sparklines, light/dark surfaces, accessible table).
 
 Strictly read-only (INVARIANT I1): writes only ``index.html`` + its own report.
 """
@@ -17,35 +16,47 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from core.metrics import MetricsStore
 from core.registry import register
 from core.types import ModuleResult, RunContext
 
+# (prompt) -> answer. Injected so tests never call the LLM.
+LLM = Callable[[str], str]
+
 _REFRESH_SECONDS = 60
-# Report subdirs that are not module summaries (skip them when building cards).
 _SKIP_DIRS = {"cache", "webdashboard", "inventory"}
 
-# dataviz reference palette (status + sequential blue + surfaces/ink), light | dark.
 _CSS = """
 :root{
   --surface:#fcfcfb; --plane:#f9f9f7; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
   --grid:#e1e0d9; --ring:rgba(11,11,11,.10);
-  --good:#0ca30c; --critical:#d03b3b; --spark:#2a78d6;
+  --good:#0ca30c; --critical:#d03b3b; --warn:#fab219; --spark:#2a78d6;
 }
 @media (prefers-color-scheme:dark){:root{
   --surface:#1a1a19; --plane:#0d0d0d; --ink:#fff; --ink2:#c3c2b7; --muted:#898781;
   --grid:#2c2c2a; --ring:rgba(255,255,255,.10);
-  --good:#0ca30c; --critical:#d03b3b; --spark:#3987e5;
+  --good:#0ca30c; --critical:#d03b3b; --warn:#fab219; --spark:#3987e5;
 }}
 *{box-sizing:border-box}
 body{margin:0;background:var(--plane);color:var(--ink);
   font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-.wrap{max-width:1100px;margin:0 auto;padding:24px}
-h1{font-size:22px;margin:0 0 2px} .sub{color:var(--muted);margin:0 0 18px;font-size:13px}
-h2{font-size:14px;color:var(--ink2);margin:26px 0 10px;text-transform:uppercase}
-h2{letter-spacing:.04em}
+.wrap{max-width:1120px;margin:0 auto;padding:24px}
+h1{font-size:22px;margin:0 0 2px} .sub{color:var(--muted);margin:0 0 16px;font-size:13px}
+h2{font-size:13px;color:var(--muted);margin:26px 0 10px;text-transform:uppercase}
+h2{letter-spacing:.05em}
+.ai{background:var(--surface);border:1px solid var(--ring);border-left:4px solid var(--spark);
+  border-radius:10px;padding:12px 16px;margin:0 0 8px;color:var(--ink2)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin:8px 0}
+.kpi{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:12px 16px}
+.kpi .n{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+.kpi .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.kpi.good .n{color:var(--good)} .kpi.bad .n{color:var(--critical)}
+.tools{display:flex;gap:8px;margin:6px 0 2px}
+.tools input{flex:1;max-width:320px;padding:8px 10px;border:1px solid var(--ring);border-radius:8px;
+  background:var(--surface);color:var(--ink);font:14px system-ui}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
 .tile{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:14px 16px}
 .tile .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -54,21 +65,66 @@ h2{letter-spacing:.04em}
 .tile .m{color:var(--ink2);font-size:12px;margin-top:6px;font-variant-numeric:tabular-nums;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .spark{margin-top:8px}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
-.card{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:12px 16px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
+.card{background:var(--surface);border:1px solid var(--ring);border-left:4px solid var(--muted);
+  border-radius:10px;padding:12px 16px}
+.card.good{border-left-color:var(--good)} .card.bad{border-left-color:var(--critical)}
 .card h3{font-size:14px;margin:0 0 6px;display:flex;justify-content:space-between}
+.card h3{align-items:baseline}
 .card h3 a{color:var(--muted);font-weight:400;font-size:12px;text-decoration:none}
-.card pre{margin:0;white-space:pre-wrap;word-break:break-word;font:12px/1.45 ui-monospace,
-  SFMono-Regular,Menlo,monospace;color:var(--ink2);max-height:240px;overflow:auto}
+.card .b{font-size:12.5px;line-height:1.5;color:var(--ink2);max-height:260px;overflow:auto}
+.card .b strong{color:var(--ink)} .card .b ul{margin:4px 0;padding-left:18px}
 table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
 th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--grid)}
 th{color:var(--muted);font-weight:600}
 """
 
+_FILTER_JS = """
+<script>
+const q=document.getElementById('q');
+if(q){q.addEventListener('input',()=>{const v=q.value.toLowerCase();
+  document.querySelectorAll('.card').forEach(c=>{
+    c.style.display=c.dataset.name.includes(v)?'':'none';});});}
+</script>
+"""
+
 
 def _as_int(value: object) -> int:
-    """Coerce a store value to int (0 for anything non-numeric)."""
     return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def md_lite(text: str) -> str:
+    """Tiny, safe markdown → HTML for a report summary (escaped first).
+
+    Handles headings (``#``/``##``/``###`` → bold line), ``- ``/``* `` bullets
+    (wrapped in a ``<ul>``), ``> `` quotes, and blank lines. Everything else is a
+    plain escaped line. No raw HTML from the source is ever emitted.
+    """
+    out: list[str] = []
+    in_list = False
+    for raw in (text or "").splitlines():
+        line = raw.rstrip()
+        stripped = line.lstrip()
+        is_bullet = stripped.startswith(("- ", "* "))
+        if in_list and not is_bullet:
+            out.append("</ul>")
+            in_list = False
+        if not stripped:
+            out.append("<br>")
+        elif stripped.startswith("#"):
+            out.append(f"<strong>{html.escape(stripped.lstrip('# ').strip())}</strong><br>")
+        elif is_bullet:
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            out.append(f"<li>{html.escape(stripped[2:])}</li>")
+        elif stripped.startswith(">"):
+            out.append(f"<em>{html.escape(stripped.lstrip('> ').strip())}</em><br>")
+        else:
+            out.append(f"{html.escape(line)}<br>")
+    if in_list:
+        out.append("</ul>")
+    return "".join(out)
 
 
 def sparkline_svg(points: list[float], *, width: int = 200, height: int = 30) -> str:
@@ -86,17 +142,45 @@ def sparkline_svg(points: list[float], *, width: int = 200, height: int = 30) ->
     lo, hi = min(points), max(points)
     span = (hi - lo) or 1.0
     n = len(points)
-    coords = []
-    for i, v in enumerate(points):
-        x = pad + (w - 2 * pad) * (i / (n - 1))
-        y = pad + (h - 2 * pad) * (1 - (v - lo) / span)
-        coords.append(f"{x:.1f},{y:.1f}")
-    label = f"tendencia {lo:g}→{hi:g}"
+    coords = [
+        f"{pad + (w - 2 * pad) * (i / (n - 1)):.1f},"
+        f"{pad + (h - 2 * pad) * (1 - (v - lo) / span):.1f}"
+        for i, v in enumerate(points)
+    ]
     return (
         f'<svg class="spark" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" role="img" aria-label="{html.escape(label)}">'
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="tendencia">'
         f'<polyline fill="none" stroke="var(--spark)" stroke-width="2" '
         f'stroke-linejoin="round" stroke-linecap="round" points="{" ".join(coords)}"/></svg>'
+    )
+
+
+def _severity_by_module(status: list[dict[str, object]]) -> dict[str, str]:
+    """good/bad per module from the metrics store status (unknown → '')."""
+    out: dict[str, str] = {}
+    for s in status:
+        out[str(s.get("module"))] = "good" if s.get("ok") else "bad"
+    return out
+
+
+def _kpis(status: list[dict[str, object]]) -> str:
+    total = len(status)
+    ok = sum(1 for s in status if s.get("ok"))
+    bad = total - ok
+    fails = sum(_as_int(s.get("failures")) for s in status)
+    cells = [
+        ("", str(total), "módulos"),
+        ("good", str(ok), "OK"),
+        ("bad" if bad else "", str(bad), "con fallos"),
+        ("bad" if fails else "", str(fails), "fallos"),
+    ]
+    return (
+        '<div class="kpis">'
+        + "".join(
+            f'<div class="kpi {cls}"><div class="n">{n}</div><div class="l">{lbl}</div></div>'
+            for cls, n, lbl in cells
+        )
+        + "</div>"
     )
 
 
@@ -125,14 +209,15 @@ def _status_tiles(
     return "".join(tiles)
 
 
-def _module_cards(cards: list[tuple[str, str]]) -> str:
+def _module_cards(cards: list[tuple[str, str]], severity: dict[str, str]) -> str:
     out: list[str] = []
     for module, summary in cards:
         m = html.escape(module)
-        body = html.escape(summary.strip() or "(sin datos)")
+        cls = severity.get(module, "")
         out.append(
-            f'<div class="card"><h3>{m}'
-            f'<a href="{m}/summary.md">ver informe →</a></h3><pre>{body}</pre></div>'
+            f'<div class="card {cls}" data-name="{m.lower()}"><h3>{m}'
+            f'<a href="{m}/summary.md">ver informe →</a></h3>'
+            f'<div class="b">{md_lite(summary)}</div></div>'
         )
     return "".join(out)
 
@@ -142,10 +227,11 @@ def render_html(
     sparks: dict[str, tuple[str, list[float]]],
     cards: list[tuple[str, str]],
     *,
+    ai_summary: str = "",
     generated: str,
 ) -> str:
-    """Render the dashboard page (pure): status tiles + module detail cards + table."""
-    tiles = _status_tiles(status, sparks)
+    """Render the dashboard page (pure): AI summary + KPIs + tiles + cards + table."""
+    severity = _severity_by_module(status)
     table_rows = "".join(
         f"<tr><td>{html.escape(str(s.get('module', '')))}</td>"
         f"<td>{'OK' if s.get('ok') else 'FALLO'}</td>"
@@ -162,13 +248,17 @@ def render_html(
         f'<p class="sub">generado {html.escape(generated)} · se actualiza cada '
         f"{_REFRESH_SECONDS}s</p>",
     ]
-    if tiles:
-        sections.append(f'<h2>Estado</h2><div class="tiles">{tiles}</div>')
+    if ai_summary.strip():
+        sections.append(f'<div class="ai">🧠 {md_lite(ai_summary)}</div>')
+    if status:
+        sections.append(_kpis(status))
+        sections.append(f'<h2>Estado</h2><div class="tiles">{_status_tiles(status, sparks)}</div>')
     if cards:
+        sections.append('<div class="tools"><input id=q placeholder="filtrar módulos…"></div>')
         sections.append(
-            f'<h2>Detalle por módulo</h2><div class="cards">{_module_cards(cards)}</div>'
+            f'<h2>Detalle por módulo</h2><div class="cards">{_module_cards(cards, severity)}</div>'
         )
-    if not tiles and not cards:
+    if not status and not cards:
         sections.append(
             '<p class="sub">Sin informes todavía — ejecuta el chequeo de salud '
             "(<code>run.py health</code>) primero.</p>"
@@ -179,12 +269,12 @@ def render_html(
             "<th>Fallos</th><th>Última ejecución</th></tr></thead>"
             f"<tbody>{table_rows}</tbody></table>"
         )
+    sections.append(_FILTER_JS)
     sections.append("</div></body></html>")
     return "".join(sections)
 
 
 def _collect_cards(reports: Path) -> list[tuple[str, str]]:
-    """Read every module report subdir's summary.md into ``(module, text)`` cards."""
     if not reports.is_dir():
         return []
     out: list[tuple[str, str]] = []
@@ -200,6 +290,36 @@ def _collect_cards(reports: Path) -> list[tuple[str, str]]:
     return out
 
 
+def build_exec_prompt(cards: list[tuple[str, str]]) -> str:
+    """Prompt for a 2-3 sentence Spanish executive summary of the homelab state."""
+    parts = [
+        "Resume en 2-3 frases, en español claro y directo, el estado GENERAL del "
+        "homelab a partir de estos informes. Destaca solo lo importante (fallos, "
+        "riesgos) y si todo está bien, dilo. No inventes nada fuera de los informes.",
+        "",
+    ]
+    for module, summary in cards:
+        parts.append(f"### {module}\n{summary.strip()[:600]}")
+    parts.append("\nRESUMEN:")
+    return "\n".join(parts)
+
+
+def _make_llm(ctx: RunContext) -> LLM:
+    def _call(prompt: str) -> str:
+        from integrations.ollama import OllamaClient
+
+        cfg = ctx.config.integrations.get("ollama", {})
+        kwargs: dict[str, object] = {}
+        base, model = cfg.get("base_url"), cfg.get("model")
+        if isinstance(base, str) and base:
+            kwargs["base_url"] = base
+        if isinstance(model, str) and model:
+            kwargs["model"] = model
+        return OllamaClient(**kwargs).complete(prompt)  # type: ignore[arg-type]
+
+    return _call
+
+
 def _clock() -> str:
     from datetime import datetime
 
@@ -207,8 +327,8 @@ def _clock() -> str:
 
 
 @register("webdashboard")
-def run(ctx: RunContext, *, now: str | None = None) -> ModuleResult:
-    """Generate ``reports/index.html`` from the metrics store + module summaries."""
+def run(ctx: RunContext, *, llm: LLM | None = None, now: str | None = None) -> ModuleResult:
+    """Generate ``reports/index.html`` from metrics + summaries (+ optional AI summary)."""
     result = ModuleResult(module="webdashboard", run_id=ctx.run_id, mode=ctx.mode)
     reports = ctx.config.reporting.dir
     db = reports / "cache" / "metrics.db"
@@ -226,7 +346,17 @@ def run(ctx: RunContext, *, now: str | None = None) -> ModuleResult:
                 sparks[module] = (key, [v for _ts, v in store.series(module, key, days=30)])
 
     cards = _collect_cards(reports)
-    page = render_html(status, sparks, cards, generated=now if now is not None else _clock())
+
+    ai_summary = ""
+    want_ai = bool(ctx.config.integrations.get("webdashboard", {}).get("ai_summary", True))
+    if cards and want_ai:
+        caller = llm if llm is not None else _make_llm(ctx)
+        try:
+            ai_summary = caller(build_exec_prompt(cards))
+        except Exception:  # Ollama down / not configured → omit the summary, no failure
+            ai_summary = ""
+
+    page = render_html(status, sparks, cards, ai_summary=ai_summary, generated=now or _clock())
     reports.mkdir(parents=True, exist_ok=True)
     (reports / "index.html").write_text(page, encoding="utf-8")
 
@@ -234,7 +364,7 @@ def run(ctx: RunContext, *, now: str | None = None) -> ModuleResult:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "plan.json").write_text(
         json.dumps(
-            {"modules": len(status), "cards": len(cards)},
+            {"modules": len(status), "cards": len(cards), "ai_summary": bool(ai_summary)},
             indent=2,
             sort_keys=True,
             ensure_ascii=False,
@@ -242,11 +372,11 @@ def run(ctx: RunContext, *, now: str | None = None) -> ModuleResult:
         encoding="utf-8",
     )
     (out_dir / "summary.md").write_text(
-        f"# Web dashboard\n\nMódulos en el panel: {len(status)} · tarjetas: {len(cards)}\n"
-        f"Página: {reports / 'index.html'}\n",
+        f"# Web dashboard\n\nMódulos: {len(status)} · tarjetas: {len(cards)} · "
+        f"IA: {'sí' if ai_summary else 'no'}\nPágina: {reports / 'index.html'}\n",
         encoding="utf-8",
     )
-    ctx.logger.info("webdashboard done", modules=len(status), cards=len(cards))
+    ctx.logger.info("webdashboard done", modules=len(status), cards=len(cards), ai=bool(ai_summary))
     result.metrics["modules"] = float(len(status))
     result.metrics["cards"] = float(len(cards))
     result.actions = 0

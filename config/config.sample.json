@@ -159,6 +159,9 @@
         { "name": "array", "path": "/mnt/user0" }
       ]
     },
+    "webdashboard": {
+      "ai_summary": true
+    },
     "notifypush": {
       "title": "izumi · informe",
       "max_section_chars": 1200,
