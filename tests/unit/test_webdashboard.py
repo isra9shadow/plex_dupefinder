@@ -79,6 +79,21 @@ def test_render_full_page_has_trends_incidents_branding() -> None:
     assert "rel=icon" in out and "id=age" in out  # favicon + smart refresh
 
 
+def test_render_fixes_chat_and_export() -> None:
+    out = webdashboard.render_html(
+        [],
+        {},
+        [("uptime", "ok")],
+        None,
+        [("docker restart sonarr", "container down", "warning")],
+        generated="now",
+    )
+    assert "Arreglos sugeridos" in out
+    assert 'data-cmd="docker restart sonarr"' in out  # apply button
+    assert "id=asb" in out and "id=ask" in out  # chat box
+    assert "/api/export" in out  # export link
+
+
 def test_card_severity_from_content_and_metrics() -> None:
     assert webdashboard.card_severity("todo ok", "good") == "good"
     assert webdashboard.card_severity("anything", "bad") == "bad"  # metrics authoritative

@@ -160,6 +160,17 @@ th{color:var(--muted);font-weight:600}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px}
 .dot.good{background:var(--good)} .dot.bad{background:var(--critical)}
 a{color:var(--accent)}
+.chat{display:flex;gap:8px;margin:8px 0}
+.chat input{flex:1;padding:9px 12px;border:1px solid var(--ring);border-radius:8px;
+  background:var(--surface);color:var(--ink);font:14px system-ui}
+.chat button,.btn{padding:9px 14px;border:1px solid var(--ring);border-radius:8px;cursor:pointer;
+  background:var(--accent);color:#fff;font:13px system-ui;text-decoration:none}
+.fx{list-style:none;padding:0;margin:0}
+.fx li{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--grid);
+  font-size:13px}
+.fx code{background:var(--plane);padding:2px 6px;border-radius:5px;font:12px ui-monospace,monospace}
+.fx button{margin-left:auto;padding:5px 10px;border:1px solid var(--ring);border-radius:7px;
+  cursor:pointer;background:var(--surface);color:var(--ink);font:12px system-ui}
 """
 
 _JS = """
@@ -199,6 +210,28 @@ setInterval(async()=>{try{
   const m=r.headers.get('Last-Modified');
   if(lm&&m&&m!==lm){location.reload();} lm=m;
 }catch(e){}},30000);
+function tok(){let t=localStorage.getItem('izumi_tok')||prompt('Token (IZUMI_WEB_TOKEN):');
+  if(t)localStorage.setItem('izumi_tok',t); return t;}
+document.querySelectorAll('[data-cmd]').forEach(b=>b.addEventListener('click',async()=>{
+  if(!confirm('Aplicar: '+b.dataset.cmd+' ?'))return; const t=tok(); if(!t)return; b.disabled=true;
+  try{const r=await fetch('/api/apply',{method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({command:b.dataset.cmd,token:t})});
+    const j=await r.json(); alert(j.message||'');
+    if(j.ok){location.reload();}else{b.disabled=false;}
+  }catch(e){alert('error de red'); b.disabled=false;}
+}));
+const asb=document.getElementById('asb');
+if(asb){asb.addEventListener('click',async()=>{
+  const ask=document.getElementById('ask'), ans=document.getElementById('ans');
+  const qq=(ask.value||'').trim(); if(!qq)return; const t=tok(); if(!t)return;
+  asb.disabled=true; ans.style.display='block'; ans.textContent='pensando…';
+  try{const r=await fetch('/api/ask',{method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({question:qq,token:t})});
+    const j=await r.json(); ans.textContent=j.message||'(sin respuesta)';
+  }catch(e){ans.textContent='error de red';} asb.disabled=false;
+});}
 </script>
 """
 
@@ -344,6 +377,19 @@ def render_incidents(incidents: list[dict[str, object]], *, nowsec: float) -> st
     return f'<h2>Incidencias</h2><ul class="tl">{"".join(rows)}</ul>'
 
 
+def _fixes_section(fixes: list[tuple[str, str, str]]) -> str:
+    """Guard-vetted proposed actions, each with an 'aplicar' button (token-gated)."""
+    if not fixes:
+        return ""
+    rows = "".join(
+        f"<li><code>{html.escape(cmd)}</code> "
+        f'<span class="sub">{html.escape(title)}</span>'
+        f'<button data-cmd="{html.escape(cmd)}">aplicar</button></li>'
+        for cmd, title, _sev in fixes
+    )
+    return f'<h2>Arreglos sugeridos</h2><ul class="fx">{rows}</ul>'
+
+
 def _severity_by_module(status: list[dict[str, object]]) -> dict[str, str]:
     """good/bad per module from the metrics store status (unknown → '')."""
     out: dict[str, str] = {}
@@ -466,6 +512,7 @@ def render_html(
     sparks: dict[str, tuple[str, list[float]]],
     cards: list[tuple[str, str]],
     incidents: list[dict[str, object]] | None = None,
+    fixes: list[tuple[str, str, str]] | None = None,
     *,
     ai_summary: str = "",
     title: str = "izumi · panel de salud",
@@ -495,6 +542,12 @@ def render_html(
     ]
     if ai_summary.strip():
         sections.append(f'<div class="ai">🧠 {md_lite(ai_summary)}</div>')
+    sections.append(
+        '<div class="chat"><input id=ask placeholder="Pregunta al asistente IA…">'
+        "<button id=asb>Preguntar</button>"
+        '<a class="btn" href="/api/export">⬇ Exportar</a></div>'
+        '<div id=ans class="ai" style="display:none"></div>'
+    )
     if status:
         sections.append(_kpis(status))
         sections.append(f'<h2>Estado</h2><div class="tiles">{_status_tiles(status, sparks)}</div>')
@@ -510,6 +563,8 @@ def render_html(
             '<button data-act="webdashboard">↻ Refrescar panel</button></div>'
         )
         sections.append(f"<h2>Detalle por módulo</h2>{_grouped_cards(cards, severity)}")
+    if fixes:
+        sections.append(_fixes_section(fixes))
     if not status and not cards:
         sections.append(
             '<p class="sub">Sin informes todavía — ejecuta el chequeo de salud '
@@ -651,6 +706,14 @@ def run(ctx: RunContext, *, llm: LLM | None = None, now: str | None = None) -> M
         except Exception:  # pragma: no cover - defensive
             incidents = []
 
+    # Guard-vetted proposed fixes (from the modules that already produce them).
+    from aictx.apply import collect_actions
+
+    fix_paths = [
+        reports / s / "plan.json" for s in ("logwatch", "analyst", "autoheal", "permsdoctor")
+    ]
+    fixes = [(a.command, a.finding_title, a.severity) for a in collect_actions(fix_paths)]
+
     wcfg = ctx.config.integrations.get("webdashboard", {})
     title = wcfg.get("title")
     accent = wcfg.get("accent")
@@ -659,6 +722,7 @@ def run(ctx: RunContext, *, llm: LLM | None = None, now: str | None = None) -> M
         sparks,
         cards,
         incidents,
+        fixes,
         ai_summary=ai_summary,
         title=title if isinstance(title, str) and title.strip() else "izumi · panel de salud",
         accent=accent if isinstance(accent, str) and accent.strip() else "#2a78d6",

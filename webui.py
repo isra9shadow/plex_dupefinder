@@ -64,6 +64,36 @@ def check_request(action: str, token: str, *, expected_token: str) -> tuple[bool
     return True, 200, "ok"
 
 
+def check_token(token: str, *, expected_token: str) -> tuple[bool, int, str]:
+    """Authorize an API call by token alone (for ask/apply, which carry no action)."""
+    if not expected_token:
+        return False, 403, "API deshabilitada (define IZUMI_WEB_TOKEN para activarla)"
+    if token != expected_token:
+        return False, 403, "token inválido"
+    return True, 200, "ok"
+
+
+def export_markdown(directory: str) -> str:
+    """Concatenate every module's summary.md into one downloadable report (pure)."""
+    from pathlib import Path
+
+    base = Path(directory)
+    parts = ["# izumi — informe consolidado", ""]
+    if base.is_dir():
+        for sub in sorted(p for p in base.iterdir() if p.is_dir()):
+            if sub.name in {"cache", "webdashboard", "inventory"}:
+                continue
+            summary = sub / "summary.md"
+            if summary.is_file():
+                try:
+                    parts.append(
+                        f"\n## {sub.name}\n\n{summary.read_text(encoding='utf-8').strip()}"
+                    )
+                except OSError:
+                    continue
+    return "\n".join(parts) + "\n"
+
+
 def _run_platform_action(action: str) -> tuple[bool, str]:  # pragma: no cover - needs the platform
     """Run a whitelisted read-only module/pipeline in-process (container only)."""
     from core import config as config_mod
@@ -78,6 +108,31 @@ def _run_platform_action(action: str) -> tuple[bool, str]:  # pragma: no cover -
     else:
         rc = _run_module(ctx, action)
     return rc == 0, f"{action} rc={rc}"
+
+
+def _ask_assistant(question: str) -> tuple[bool, str]:  # pragma: no cover - needs the platform
+    from assistant import answer
+
+    if not question.strip():
+        return False, "pregunta vacía"
+    return True, answer(question)
+
+
+def _apply_command(command: str) -> tuple[bool, str]:  # pragma: no cover - needs the platform
+    from aictx.apply import ApplyAction, apply_action, classify, finding_fingerprint
+
+    verdict = classify(command)
+    if not verdict.allowed:  # allow-list is the boundary even from the web
+        return False, f"rechazado (no en la allow-list): {verdict.reason}"
+    action = ApplyAction(
+        command=command,
+        category=verdict.category,
+        finding_title="web apply",
+        fingerprint=finding_fingerprint(command),
+        severity="info",
+    )
+    outcome = apply_action(action)
+    return outcome.ok, (outcome.output or outcome.error or f"rc={outcome.returncode}").strip()
 
 
 _NO_INDEX_HTML = (
@@ -109,8 +164,21 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self) -> None:
+        if self.path.split("?", 1)[0] == "/api/export":
+            body = export_markdown(self.directory).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="izumi-informe.md"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+
     def do_POST(self) -> None:
-        if self.path.split("?", 1)[0] != "/api/run":
+        path = self.path.split("?", 1)[0]
+        if path not in ("/api/run", "/api/ask", "/api/apply"):
             self._json(404, {"ok": False, "message": "not found"})
             return
         length = int(self.headers.get("Content-Length") or 0)
@@ -118,18 +186,29 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
             data = json.loads(self.rfile.read(length) or b"{}") if length else {}
         except (ValueError, OSError):
             data = {}
-        action = str(data.get("action", "")) if isinstance(data, dict) else ""
-        token = str(data.get("token", "")) if isinstance(data, dict) else ""
-        ok, code, msg = check_request(
-            action, token, expected_token=os.environ.get(_API_TOKEN_ENV, "")
-        )
-        if ok:
-            try:
-                ran, msg = _run_platform_action(action)
-                code = 200 if ran else 500
-                ok = ran
-            except Exception as exc:  # never crash the server on a run error
-                ok, code, msg = False, 500, f"error: {exc}"
+        if not isinstance(data, dict):
+            data = {}
+        token = str(data.get("token", ""))
+        expected = os.environ.get(_API_TOKEN_ENV, "")
+        try:
+            if path == "/api/run":
+                action = str(data.get("action", ""))
+                ok, code, msg = check_request(action, token, expected_token=expected)
+                if ok:
+                    ok, detail = _run_platform_action(action)
+                    code, msg = (200 if ok else 500), detail
+            elif path == "/api/ask":
+                ok, code, msg = check_token(token, expected_token=expected)
+                if ok:
+                    ok, detail = _ask_assistant(str(data.get("question", "")))
+                    code, msg = (200 if ok else 400), detail
+            else:  # /api/apply
+                ok, code, msg = check_token(token, expected_token=expected)
+                if ok:
+                    ok, detail = _apply_command(str(data.get("command", "")))
+                    code, msg = (200 if ok else 400), detail
+        except Exception as exc:  # never crash the server on a handler error
+            ok, code, msg = False, 500, f"error: {exc}"
         self._json(code, {"ok": ok and code == 200, "message": msg})
 
 

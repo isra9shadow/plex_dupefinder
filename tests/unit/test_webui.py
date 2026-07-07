@@ -41,3 +41,20 @@ def test_api_rejects_non_whitelisted_action() -> None:
 def test_api_allows_readonly_action_with_token() -> None:
     ok, code, _ = webui.check_request("health", "secret", expected_token="secret")
     assert ok and code == 200
+
+
+def test_check_token_ask_apply() -> None:
+    assert webui.check_token("s", expected_token="s")[0] is True
+    assert webui.check_token("x", expected_token="s")[0] is False
+    assert webui.check_token("s", expected_token="")[0] is False  # API off
+
+
+def test_export_markdown_concatenates_summaries(tmp_path) -> None:
+    (tmp_path / "uptime").mkdir()
+    (tmp_path / "uptime" / "summary.md").write_text("servicios ok", encoding="utf-8")
+    (tmp_path / "cache").mkdir()  # infra dir, skipped
+    (tmp_path / "cache" / "summary.md").write_text("x", encoding="utf-8")
+    out = webui.export_markdown(str(tmp_path))
+    assert out.startswith("# izumi")
+    assert "## uptime" in out and "servicios ok" in out
+    assert "## cache" not in out  # infra dir excluded
