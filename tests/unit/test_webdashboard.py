@@ -42,6 +42,51 @@ def test_render_empty() -> None:
     assert "Sin informes todavía" in webdashboard.render_html([], {}, [], generated="now")
 
 
+def test_card_severity_from_content_and_metrics() -> None:
+    assert webdashboard.card_severity("todo ok", "good") == "good"
+    assert webdashboard.card_severity("anything", "bad") == "bad"  # metrics authoritative
+    assert webdashboard.card_severity("1 base corrupta", "") == "bad"  # bad word
+    assert webdashboard.card_severity("Containers with errors: 17", "good") == "warn"  # count>0
+    assert webdashboard.card_severity("errors: 0", "") == ""  # zero counts → neutral
+
+
+def test_render_groups_cards_into_collapsible_sections() -> None:
+    cards = [("uptime", "ok"), ("logwatch", "errors: 5"), ("organizer", "plan")]
+    out = webdashboard.render_html([], {}, cards, generated="now")
+    assert "<details open><summary>Salud (1)" in out  # uptime under Salud
+    assert "IA &amp; avisos (1)" in out  # logwatch under IA
+    assert "Media (1)" in out  # organizer under Media
+    assert 'class="card warn"' in out  # logwatch errors:5 → amber
+
+
+def test_run_writes_per_module_page(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    (reports / "dbcheck").mkdir(parents=True, exist_ok=True)
+    (reports / "dbcheck" / "summary.md").write_text("# Dbcheck\n- 1 corrupta", encoding="utf-8")
+    (reports / "dbcheck" / "plan.json").write_text('{"corrupt_count": 1}', encoding="utf-8")
+    ctx = make_context(tmp_path)
+    webdashboard.run(ctx, llm=lambda p: "", now="now")
+    page = (reports / "dbcheck" / "index.html").read_text(encoding="utf-8")
+    assert "volver al panel" in page and "corrupt_count" in page
+
+
+def test_run_caches_ai_summary(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    (reports / "uptime").mkdir(parents=True, exist_ok=True)
+    (reports / "uptime" / "summary.md").write_text("ok", encoding="utf-8")
+    ctx = make_context(tmp_path)
+
+    calls = {"n": 0}
+
+    def llm(prompt: str) -> str:
+        calls["n"] += 1
+        return "resumen"
+
+    webdashboard.run(ctx, llm=llm, now="a")
+    webdashboard.run(ctx, llm=llm, now="b")  # same summaries → cached, no 2nd LLM call
+    assert calls["n"] == 1
+
+
 def test_run_writes_panel_with_ai_and_cards(tmp_path: Path) -> None:
     reports = tmp_path / "reports"
     with MetricsStore(reports / "cache" / "metrics.db") as store:

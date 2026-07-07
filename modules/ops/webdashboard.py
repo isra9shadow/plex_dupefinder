@@ -14,11 +14,14 @@ Strictly read-only (INVARIANT I1): writes only ``index.html`` + its own report.
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 
+from core.cache import Cache
 from core.metrics import MetricsStore
 from core.registry import register
 from core.types import ModuleResult, RunContext
@@ -28,6 +31,65 @@ LLM = Callable[[str], str]
 
 _REFRESH_SECONDS = 60
 _SKIP_DIRS = {"cache", "webdashboard", "inventory"}
+
+# Cards are grouped under these collapsible sections (first match wins; the rest
+# fall into "Otros"). Purely presentational.
+_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Salud",
+        (
+            "uptime",
+            "dbcheck",
+            "diskwatch",
+            "permsdoctor",
+            "backupaudit",
+            "netdoctor",
+            "certdoctor",
+            "capacitydoctor",
+            "status",
+        ),
+    ),
+    ("Media", ("extractor", "organizer", "plexrefresh", "shadowcheck", "dbrepair")),
+    ("IA & avisos", ("analyst", "logwatch", "autoheal", "autopilot", "notifypush", "configcheck")),
+)
+
+# A word anywhere in a summary that means "something is wrong" → red card.
+_BAD_WORDS = (
+    "corrupt",
+    "fallo",
+    "expired",
+    "caducado",
+    "over_threshold",
+    "full_soon",
+    "rolled_back",
+    "missing:",
+    "invalid:",
+)
+# "<label> N" counts that mean trouble when N>0 → amber card.
+_COUNT_RE = re.compile(
+    r"(errores?|errors?|corrupt|missing|invalid|en riesgo|at.?risk|a caducar|caducados|"
+    r"drift|deriva|aislados|isolated|expiring|degrad)\D{0,8}(\d+)",
+    re.IGNORECASE,
+)
+
+
+def card_severity(summary: str, metric_status: str) -> str:
+    """Colour a card 'good'/'warn'/'bad'/'' from the metrics status + the summary text.
+
+    The metrics status (from a run.py run) is authoritative for a hard failure; on top
+    of that the summary content can raise a warning (e.g. logwatch '17 errors' even when
+    the run itself succeeded), so a problem is visible before it becomes a failure.
+    """
+    if metric_status == "bad":
+        return "bad"
+    low = summary.lower()
+    if any(w in low for w in _BAD_WORDS):
+        return "bad"
+    worst = max((int(m.group(2)) for m in _COUNT_RE.finditer(summary)), default=0)
+    if worst > 0:
+        return "warn"
+    return metric_status  # 'good' or '' (unknown)
+
 
 _CSS = """
 :root{
@@ -69,6 +131,11 @@ h2{letter-spacing:.05em}
 .card{background:var(--surface);border:1px solid var(--ring);border-left:4px solid var(--muted);
   border-radius:10px;padding:12px 16px}
 .card.good{border-left-color:var(--good)} .card.bad{border-left-color:var(--critical)}
+.card.warn{border-left-color:var(--warn)}
+details{margin:0 0 6px} details>summary{cursor:pointer;color:var(--ink2);font-size:13px;
+  text-transform:uppercase;letter-spacing:.05em;padding:6px 0;list-style:none}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"▸ "} details[open]>summary::before{content:"▾ "}
 .card h3{font-size:14px;margin:0 0 6px;display:flex;justify-content:space-between}
 .card h3{align-items:baseline}
 .card h3 a{color:var(--muted);font-weight:400;font-size:12px;text-decoration:none}
@@ -209,17 +276,60 @@ def _status_tiles(
     return "".join(tiles)
 
 
-def _module_cards(cards: list[tuple[str, str]], severity: dict[str, str]) -> str:
-    out: list[str] = []
+def _one_card(module: str, summary: str, status: dict[str, str]) -> str:
+    m = html.escape(module)
+    cls = card_severity(summary, status.get(module, ""))
+    return (
+        f'<div class="card {cls}" data-name="{m.lower()}"><h3>{m}'
+        f'<a href="{m}/">ver informe →</a></h3>'
+        f'<div class="b">{md_lite(summary)}</div></div>'
+    )
+
+
+def render_module_page(module: str, summary: str, plan_json: str, *, generated: str) -> str:
+    """A per-module detail page (rendered summary + raw plan.json), served at /<module>/."""
+    m = html.escape(module)
+    plan_block = (
+        f'<h2>plan.json</h2><div class="card"><div class="b"><pre style="white-space:pre-wrap">'
+        f"{html.escape(plan_json)}</pre></div></div>"
+        if plan_json
+        else ""
+    )
+    return (
+        "<!doctype html><html lang=es><head><meta charset=utf-8>"
+        '<meta name=viewport content="width=device-width,initial-scale=1">'
+        f"<title>izumi · {m}</title><style>{_CSS}</style></head><body><div class=wrap>"
+        f"<h1>izumi · {m}</h1>"
+        f'<p class="sub">generado {html.escape(generated)} · '
+        '<a href="../">← volver al panel</a></p>'
+        f'<div class="card"><div class="b">{md_lite(summary)}</div></div>'
+        f"{plan_block}</div></body></html>"
+    )
+
+
+def _section_for(module: str) -> str:
+    for name, members in _SECTIONS:
+        if module in members:
+            return name
+    return "Otros"
+
+
+def _grouped_cards(cards: list[tuple[str, str]], status: dict[str, str]) -> str:
+    """Group cards into collapsible sections, in the fixed section order."""
+    by_section: dict[str, list[str]] = {}
     for module, summary in cards:
-        m = html.escape(module)
-        cls = severity.get(module, "")
-        out.append(
-            f'<div class="card {cls}" data-name="{m.lower()}"><h3>{m}'
-            f'<a href="{m}/summary.md">ver informe →</a></h3>'
-            f'<div class="b">{md_lite(summary)}</div></div>'
+        by_section.setdefault(_section_for(module), []).append(_one_card(module, summary, status))
+    order = [name for name, _ in _SECTIONS] + ["Otros"]
+    blocks: list[str] = []
+    for name in order:
+        items = by_section.get(name)
+        if not items:
+            continue
+        blocks.append(
+            f"<details open><summary>{html.escape(name)} ({len(items)})</summary>"
+            f'<div class="cards">{"".join(items)}</div></details>'
         )
-    return "".join(out)
+    return "".join(blocks)
 
 
 def render_html(
@@ -255,9 +365,7 @@ def render_html(
         sections.append(f'<h2>Estado</h2><div class="tiles">{_status_tiles(status, sparks)}</div>')
     if cards:
         sections.append('<div class="tools"><input id=q placeholder="filtrar módulos…"></div>')
-        sections.append(
-            f'<h2>Detalle por módulo</h2><div class="cards">{_module_cards(cards, severity)}</div>'
-        )
+        sections.append(f"<h2>Detalle por módulo</h2>{_grouped_cards(cards, severity)}")
     if not status and not cards:
         sections.append(
             '<p class="sub">Sin informes todavía — ejecuta el chequeo de salud '
@@ -347,16 +455,39 @@ def run(ctx: RunContext, *, llm: LLM | None = None, now: str | None = None) -> M
 
     cards = _collect_cards(reports)
 
+    # Per-module detail pages (served at /<module>/), so "ver informe" opens a
+    # rendered page instead of raw markdown.
+    when = now or _clock()
+    for module, summary in cards:
+        plan_path = reports / module / "plan.json"
+        try:
+            plan_json = plan_path.read_text(encoding="utf-8") if plan_path.is_file() else ""
+        except OSError:
+            plan_json = ""
+        (reports / module / "index.html").write_text(
+            render_module_page(module, summary, plan_json, generated=when), encoding="utf-8"
+        )
+
     ai_summary = ""
     want_ai = bool(ctx.config.integrations.get("webdashboard", {}).get("ai_summary", True))
     if cards and want_ai:
-        caller = llm if llm is not None else _make_llm(ctx)
-        try:
-            ai_summary = caller(build_exec_prompt(cards))
-        except Exception:  # Ollama down / not configured → omit the summary, no failure
-            ai_summary = ""
+        # Cache the AI summary keyed on a hash of the summaries — only call Ollama when
+        # the content actually changed (avoids an LLM call on every render).
+        content_hash = hashlib.sha256("".join(s for _, s in cards).encode("utf-8")).hexdigest()
+        ai_cache = Cache(reports / "cache" / "ai_summary.json")
+        cached = ai_cache.get("entry")
+        if isinstance(cached, dict) and cached.get("hash") == content_hash and cached.get("text"):
+            ai_summary = str(cached["text"])
+        else:
+            caller = llm if llm is not None else _make_llm(ctx)
+            try:
+                ai_summary = caller(build_exec_prompt(cards))
+                ai_cache.set("entry", {"hash": content_hash, "text": ai_summary})
+                ai_cache.save()
+            except Exception:  # Ollama down / not configured → omit the summary, no failure
+                ai_summary = ""
 
-    page = render_html(status, sparks, cards, ai_summary=ai_summary, generated=now or _clock())
+    page = render_html(status, sparks, cards, ai_summary=ai_summary, generated=when)
     reports.mkdir(parents=True, exist_ok=True)
     (reports / "index.html").write_text(page, encoding="utf-8")
 
