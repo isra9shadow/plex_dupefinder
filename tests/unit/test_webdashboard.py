@@ -52,6 +52,14 @@ def test_render_good_card_has_no_ai_fix_button() -> None:
     assert 'data-mod="uptime"' not in out  # healthy cards don't offer a fix button
 
 
+def test_js_block_braces_and_parens_balanced() -> None:
+    # A single unbalanced ) once killed the whole <script>, silently disabling every
+    # button + the auto-refresh. Guard the gross shape so it can't regress unnoticed.
+    js = webdashboard._JS
+    for open_ch, close_ch in (("(", ")"), ("{", "}"), ("[", "]")):
+        assert js.count(open_ch) == js.count(close_ch), f"unbalanced {open_ch}{close_ch} in _JS"
+
+
 def test_render_empty() -> None:
     assert "Sin informes todavía" in webdashboard.render_html([], {}, [], generated="now")
 

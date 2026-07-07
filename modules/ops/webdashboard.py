@@ -176,10 +176,18 @@ a{color:var(--accent)}
   background:var(--surface);color:var(--ink);font:12px system-ui}
 .aians{display:none;margin-top:8px;padding-top:6px;border-top:1px solid var(--grid);
   font-size:12px;color:var(--ink2);white-space:pre-wrap}
+button:disabled{cursor:progress}
+@keyframes izspin{to{transform:rotate(360deg)}}
+@keyframes izpulse{0%,100%{opacity:.5}50%{opacity:1}}
+.spin{display:inline-block;width:11px;height:11px;margin-right:6px;vertical-align:-1px;
+  border:2px solid var(--ring);border-top-color:var(--accent);border-radius:50%;
+  animation:izspin .7s linear infinite}
+.wait{animation:izpulse 1s ease-in-out infinite}
 """
 
 _JS = r"""
 <script>
+const SP='<span class="spin"></span>';  // little rotating spinner shown while waiting
 const q=document.getElementById('q');
 if(q){q.addEventListener('input',()=>{const v=q.value.toLowerCase();
   document.querySelectorAll('.card').forEach(c=>{
@@ -187,15 +195,15 @@ if(q){q.addEventListener('input',()=>{const v=q.value.toLowerCase();
 document.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',async()=>{
   let t=localStorage.getItem('izumi_tok')||prompt('Token (IZUMI_WEB_TOKEN):');
   if(!t)return; localStorage.setItem('izumi_tok',t);
-  const o=b.textContent; b.disabled=true; b.textContent='ejecutando…';
+  const o=b.innerHTML; b.disabled=true; b.innerHTML=SP+'ejecutando…';
   try{const r=await fetch('/api/run',{method:'POST',
       headers:{'content-type':'application/json'},
       body:JSON.stringify({action:b.dataset.act,token:t})});
     const j=await r.json();
     if(!j.ok && /token/.test(j.message||'')) localStorage.removeItem('izumi_tok');
-    b.textContent=o; b.disabled=false; if(j.ok){location.reload();}else{alert(j.message||'error');}
-  }catch(e){b.textContent=o; b.disabled=false; alert('error de red');}
-});});
+    b.innerHTML=o; b.disabled=false; if(j.ok){location.reload();}else{alert(j.message||'error');}
+  }catch(e){b.innerHTML=o; b.disabled=false; alert('error de red');}
+}));
 const tip=document.getElementById('tip');
 if(tip){document.querySelectorAll('.chart .pt').forEach(p=>{
   p.addEventListener('mousemove',e=>{tip.textContent=p.dataset.v;
@@ -218,13 +226,14 @@ setInterval(async()=>{try{
 function tok(){let t=localStorage.getItem('izumi_tok')||prompt('Token (IZUMI_WEB_TOKEN):');
   if(t)localStorage.setItem('izumi_tok',t); return t;}
 async function applyCmd(cmd,btn){
-  if(!confirm('Aplicar: '+cmd+' ?'))return; const t=tok(); if(!t)return; btn.disabled=true;
+  if(!confirm('Aplicar: '+cmd+' ?'))return; const t=tok(); if(!t)return;
+  const o=btn.innerHTML; btn.disabled=true; btn.innerHTML=SP+'aplicando…';
   try{const r=await fetch('/api/apply',{method:'POST',
     headers:{'content-type':'application/json'},
     body:JSON.stringify({command:cmd,token:t})});
     const j=await r.json(); alert(j.message||'');
-    if(j.ok){location.reload();}else{btn.disabled=false;}
-  }catch(e){alert('error de red'); btn.disabled=false;}
+    if(j.ok){location.reload();}else{btn.innerHTML=o; btn.disabled=false;}
+  }catch(e){alert('error de red'); btn.innerHTML=o; btn.disabled=false;}
 }
 document.querySelectorAll('[data-cmd]').forEach(b=>
   b.addEventListener('click',()=>applyCmd(b.dataset.cmd,b)));
@@ -244,30 +253,32 @@ function fixcmd(txt){
 document.querySelectorAll('.fixai').forEach(b=>b.addEventListener('click',async()=>{
   const mod=b.dataset.mod, box=document.getElementById('ai-'+mod);
   const t=tok(); if(!t)return; b.disabled=true;
-  box.style.display='block'; box.textContent='pensando…';
+  box.style.display='block'; box.className='aians wait'; box.innerHTML=SP+'pensando…';
   const qq='¿Cómo arreglo el problema de '+mod+'? Da el comando exacto '
     +'(docker restart/chmod/chown) si aplica, si no explica el paso.';
   try{const r=await fetch('/api/ask',{method:'POST',
     headers:{'content-type':'application/json'},
     body:JSON.stringify({question:qq,token:t})});
-    const j=await r.json(); box.textContent=j.message||'(sin respuesta)';
+    const j=await r.json(); box.className='aians'; box.textContent=j.message||'(sin respuesta)';
     const cmd=fixcmd(j.message);
     if(cmd){const ab=document.createElement('button');
       ab.className='fixai'; ab.textContent='▶ aplicar: '+cmd; ab.style.marginTop='6px';
       ab.addEventListener('click',()=>applyCmd(cmd,ab));
       box.appendChild(document.createElement('br')); box.appendChild(ab);}
-  }catch(e){box.textContent='error de red';} b.disabled=false;
+  }catch(e){box.className='aians'; box.textContent='error de red';} b.disabled=false;
 }));
 const asb=document.getElementById('asb');
 if(asb){asb.addEventListener('click',async()=>{
   const ask=document.getElementById('ask'), ans=document.getElementById('ans');
   const qq=(ask.value||'').trim(); if(!qq)return; const t=tok(); if(!t)return;
-  asb.disabled=true; ans.style.display='block'; ans.textContent='pensando…';
+  asb.disabled=true; ans.style.display='block'; ans.classList.add('wait');
+  ans.innerHTML=SP+'pensando…';
   try{const r=await fetch('/api/ask',{method:'POST',
     headers:{'content-type':'application/json'},
     body:JSON.stringify({question:qq,token:t})});
-    const j=await r.json(); ans.textContent=j.message||'(sin respuesta)';
-  }catch(e){ans.textContent='error de red';} asb.disabled=false;
+    const j=await r.json(); ans.classList.remove('wait');
+    ans.textContent=j.message||'(sin respuesta)';
+  }catch(e){ans.classList.remove('wait'); ans.textContent='error de red';} asb.disabled=false;
 });}
 </script>
 """
