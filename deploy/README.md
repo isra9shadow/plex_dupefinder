@@ -73,3 +73,54 @@ it. Point your MCP client at a `docker run` that launches it — e.g. Claude Des
 ```
 
 Then ask the assistant to run a doctor, list fixes, or apply an allow-listed one.
+
+## External guardian PC (monitor from outside + operate the server)
+
+A second always-on PC (a Windows box, a laptop, a mini-PC) on the same LAN can act as
+an **external guardian**: it watches the server *from the outside* — so it can still
+warn you when the server (and the on-box bot) is completely down — and it can also
+*operate* the server remotely. Two halves, both stdlib, both in this repo:
+
+### 1. Watch — `sentinel.py` (knows WHAT failed, not just that the box is up)
+
+Drop `sentinel.py` + a `.env` on the guardian PC and run it. It probes the server and
+its services and alerts over Telegram on state changes. If you also set
+`IZUMI_SENTINEL_PANEL` to the web panel URL, then — while the server is up — it pulls
+`GET /api/status` and alerts **per failing module with its failure count** (and on
+recovery), debounced so it never spams. So a down server gives you one clear "🚨 no
+responde" alarm; a *running* server with a broken module gives you "⚠️ Módulo con
+fallos: dbcheck (2 fallos)".
+
+```ini
+# .env next to sentinel.py on the guardian PC
+IZUMI_TELEGRAM_BOT_TOKEN=...            # reuse the main bot token (send-only, no clash)
+IZUMI_TELEGRAM_CHAT_ID=...
+IZUMI_SENTINEL_SERVER=192.168.6.62:443  # master up/down check
+IZUMI_SENTINEL_TARGETS=plex=192.168.6.62:32400,sonarr=192.168.6.62:8989
+IZUMI_SENTINEL_PANEL=http://192.168.6.62:8888   # optional: report which module fails
+IZUMI_SENTINEL_PANEL_AUTH=              # "user:pass" only if the panel has Basic Auth
+```
+
+```bash
+python sentinel.py          # stays open; pythonw sentinel.py / Scheduled Task = background
+```
+
+### 2. Operate — the token API (or bot) reaches back into the server
+
+The guardian *acts* on the server through the same guarded surfaces used by the panel:
+
+- **Web token API** (`webui.py` with `IZUMI_WEB_TOKEN`): `POST /api/run` (whitelisted
+  read-only doctors), `POST /api/ask` (the assistant), `POST /api/apply` (a fix). Every
+  apply is re-vetted against the `aictx.apply` allow-list, so even from off-box the
+  guardian can only run `docker restart/start/stop`, `chmod`, `chown`, `mkdir` — never
+  anything destructive. Example from the guardian:
+  ```bash
+  curl -s -XPOST http://192.168.6.62:8888/api/apply \
+    -H 'content-type: application/json' \
+    -d '{"token":"<IZUMI_WEB_TOKEN>","command":"docker restart sonarr"}'
+  ```
+- **Telegram bot** (`bot.py` on the server): same routing, driven from your phone.
+
+So the guardian both **alerts with the error detail** (sentinel + `/api/status`) and
+**operates the server** (token API / bot) — all read-only or allow-list-gated, with the
+`aictx.apply` allow-list as the only action boundary in every path.
