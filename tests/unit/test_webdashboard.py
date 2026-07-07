@@ -35,11 +35,48 @@ def test_render_has_kpis_ai_filter_and_severity() -> None:
     assert "id=q" in out  # filter box
     assert '<div class="card bad" data-name="dbcheck">' in out  # severity colour
     assert '<div class="card good" data-name="uptime">' in out
-    assert "http-equiv=refresh" in out
+    assert "id=age" in out  # smart auto-refresh (no full meta-refresh flicker)
 
 
 def test_render_empty() -> None:
     assert "Sin informes todavía" in webdashboard.render_html([], {}, [], generated="now")
+
+
+def test_line_chart_has_hover_points() -> None:
+    svg = webdashboard.line_chart_svg([1.0, 3.0, 2.0])
+    assert svg.count('class="pt"') == 3  # one hoverable dot per point
+    assert 'data-v="3"' in svg
+
+
+def test_render_incidents_timeline() -> None:
+    inc = [
+        {"module": "dbcheck", "title": "DB corruption", "status": "open", "last_seen": 0.0},
+        {"module": "uptime", "title": "svc down", "status": "resolved", "last_seen": 0.0},
+    ]
+    out = webdashboard.render_incidents(inc, nowsec=100.0)
+    assert "Incidencias" in out
+    assert '<span class="dot bad">' in out and "abierto" in out  # open incident
+    assert '<span class="dot good">' in out and "resuelto" in out
+
+
+def test_render_full_page_has_trends_incidents_branding() -> None:
+    status = [{"module": "diskwatch", "ok": True, "failures": 0, "ts": "t"}]
+    sparks = {"diskwatch": ("temp", [40.0, 42.0, 45.0])}
+    inc = [{"module": "dbcheck", "title": "x", "status": "open", "last_seen": 0.0}]
+    out = webdashboard.render_html(
+        status,
+        sparks,
+        [("diskwatch", "ok")],
+        inc,
+        title="Homelab de Isra",
+        accent="#e34948",
+        nowsec=100.0,
+        generated="now",
+    )
+    assert "Tendencias" in out and 'class="pt"' in out  # trend chart
+    assert "Incidencias" in out
+    assert "Homelab de Isra" in out and "#e34948" in out  # branding title + accent
+    assert "rel=icon" in out and "id=age" in out  # favicon + smart refresh
 
 
 def test_card_severity_from_content_and_metrics() -> None:

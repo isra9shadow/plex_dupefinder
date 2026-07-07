@@ -18,6 +18,7 @@ import hashlib
 import html
 import json
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -95,12 +96,12 @@ _CSS = """
 :root{
   --surface:#fcfcfb; --plane:#f9f9f7; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
   --grid:#e1e0d9; --ring:rgba(11,11,11,.10);
-  --good:#0ca30c; --critical:#d03b3b; --warn:#fab219; --spark:#2a78d6;
+  --good:#0ca30c; --critical:#d03b3b; --warn:#fab219; --spark:#2a78d6; --accent:__ACCENT__;
 }
 @media (prefers-color-scheme:dark){:root{
   --surface:#1a1a19; --plane:#0d0d0d; --ink:#fff; --ink2:#c3c2b7; --muted:#898781;
   --grid:#2c2c2a; --ring:rgba(255,255,255,.10);
-  --good:#0ca30c; --critical:#d03b3b; --warn:#fab219; --spark:#3987e5;
+  --good:#0ca30c; --critical:#d03b3b; --warn:#fab219; --spark:#3987e5; --accent:__ACCENT__;
 }}
 *{box-sizing:border-box}
 body{margin:0;background:var(--plane);color:var(--ink);
@@ -147,6 +148,18 @@ details>summary::before{content:"▸ "} details[open]>summary::before{content:"�
 table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
 th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--grid)}
 th{color:var(--muted);font-weight:600}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.fig{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:10px 12px}
+.figh{font-size:12px;color:var(--ink2);margin-bottom:2px}
+.chart .pt{fill:var(--accent);opacity:.85;cursor:pointer}
+.chart .pt:hover{r:5}
+#tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--plane);
+  font:12px system-ui;padding:3px 7px;border-radius:6px;opacity:0;transition:opacity .1s;z-index:9}
+.tl{list-style:none;padding:0;margin:0}
+.tl li{padding:6px 0;border-bottom:1px solid var(--grid);font-size:13px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px}
+.dot.good{background:var(--good)} .dot.bad{background:var(--critical)}
+a{color:var(--accent)}
 """
 
 _JS = """
@@ -167,6 +180,25 @@ document.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',as
     b.textContent=o; b.disabled=false; if(j.ok){location.reload();}else{alert(j.message||'error');}
   }catch(e){b.textContent=o; b.disabled=false; alert('error de red');}
 });});
+const tip=document.getElementById('tip');
+if(tip){document.querySelectorAll('.chart .pt').forEach(p=>{
+  p.addEventListener('mousemove',e=>{tip.textContent=p.dataset.v;
+    tip.style.left=(e.clientX+10)+'px';tip.style.top=(e.clientY-10)+'px';tip.style.opacity=1;});
+  p.addEventListener('mouseleave',()=>{tip.style.opacity=0;});});}
+const gen=parseFloat(document.body.dataset.gen||'0');
+const age=document.getElementById('age');
+function fa(s){s=Math.max(0,s|0);
+  if(s<90)return 'hace segundos';
+  if(s<5400)return 'hace '+(s/60|0)+' min';
+  return 'hace '+(s/3600|0)+' h';}
+if(age){const u=()=>{age.textContent='actualizado '+fa(Date.now()/1000-gen);};
+  u(); setInterval(u,1000);}
+let lm=null;
+setInterval(async()=>{try{
+  const r=await fetch('/',{method:'HEAD',cache:'no-store'});
+  const m=r.headers.get('Last-Modified');
+  if(lm&&m&&m!==lm){location.reload();} lm=m;
+}catch(e){}},30000);
 </script>
 """
 
@@ -235,6 +267,81 @@ def sparkline_svg(points: list[float], *, width: int = 200, height: int = 30) ->
         f'<polyline fill="none" stroke="var(--spark)" stroke-width="2" '
         f'stroke-linejoin="round" stroke-linecap="round" points="{" ".join(coords)}"/></svg>'
     )
+
+
+def line_chart_svg(points: list[float], *, width: int = 260, height: int = 64) -> str:
+    """A small line chart with hoverable points (data-v carries the value)."""
+    pad = 6.0
+    w, h = float(width), float(height)
+    if len(points) < 2:
+        return '<div class="sub">sin serie suficiente</div>'
+    lo, hi = min(points), max(points)
+    span = (hi - lo) or 1.0
+    n = len(points)
+    xs = [pad + (w - 2 * pad) * (i / (n - 1)) for i in range(n)]
+    ys = [pad + (h - 2 * pad) * (1 - (v - lo) / span) for v in points]
+    poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys, strict=True))
+    dots = "".join(
+        f'<circle class="pt" cx="{x:.1f}" cy="{y:.1f}" r="3" data-v="{v:g}"/>'
+        for x, y, v in zip(xs, ys, points, strict=True)
+    )
+    return (
+        f'<svg class="chart" width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+        f'role="img" aria-label="tendencia {lo:g}→{hi:g}">'
+        f'<line x1="{pad}" y1="{h - pad}" x2="{w - pad}" y2="{h - pad}" '
+        f'stroke="var(--grid)" stroke-width="1"/>'
+        f'<polyline fill="none" stroke="var(--accent)" stroke-width="2" '
+        f'stroke-linejoin="round" points="{poly}"/>{dots}</svg>'
+    )
+
+
+def _trends(sparks: dict[str, tuple[str, list[float]]]) -> str:
+    figs = []
+    for module in sorted(sparks):
+        key, points = sparks[module]
+        if len(points) < 2:
+            continue
+        figs.append(
+            f'<div class="fig"><div class="figh">{html.escape(module)} · '
+            f"{html.escape(key)}</div>{line_chart_svg(points)}</div>"
+        )
+    if not figs:
+        return ""
+    return f'<h2>Tendencias</h2><div class="figs">{"".join(figs)}</div>'
+
+
+def _flt(value: object) -> float:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
+def _rel_time(ts: float, nowsec: float) -> str:
+    d = max(0.0, nowsec - ts)
+    if d < 90:
+        return "hace segundos"
+    if d < 5400:
+        return f"hace {int(d / 60)} min"
+    if d < 129600:
+        return f"hace {int(d / 3600)} h"
+    return f"hace {int(d / 86400)} d"
+
+
+def render_incidents(incidents: list[dict[str, object]], *, nowsec: float) -> str:
+    """Timeline of recent incidents (open first), from the incident cache."""
+    if not incidents:
+        return ""
+    rows = []
+    for inc in incidents[:40]:
+        resolved = str(inc.get("status")) == "resolved"
+        dot = "good" if resolved else "bad"
+        module = html.escape(str(inc.get("module", "")))
+        title = html.escape(str(inc.get("title", "")))
+        when = _rel_time(_flt(inc.get("last_seen")), nowsec)
+        tag = "resuelto" if resolved else "abierto"
+        rows.append(
+            f'<li><span class="dot {dot}"></span><b>{module}</b> · {title} '
+            f'<span class="sub">— {tag}, {when}</span></li>'
+        )
+    return f'<h2>Incidencias</h2><ul class="tl">{"".join(rows)}</ul>'
 
 
 def _severity_by_module(status: list[dict[str, object]]) -> dict[str, str]:
@@ -347,16 +454,29 @@ def _grouped_cards(cards: list[tuple[str, str]], status: dict[str, str]) -> str:
     return "".join(blocks)
 
 
+_FAVICON = (
+    "data:image/svg+xml,"
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+    "<circle cx='16' cy='16' r='14' fill='%232a78d6'/></svg>"
+)
+
+
 def render_html(
     status: list[dict[str, object]],
     sparks: dict[str, tuple[str, list[float]]],
     cards: list[tuple[str, str]],
+    incidents: list[dict[str, object]] | None = None,
     *,
     ai_summary: str = "",
+    title: str = "izumi · panel de salud",
+    accent: str = "#2a78d6",
+    nowsec: float = 0.0,
     generated: str,
 ) -> str:
-    """Render the dashboard page (pure): AI summary + KPIs + tiles + cards + table."""
+    """Render the dashboard page (pure): AI + KPIs + tiles + trends + cards + incidents."""
     severity = _severity_by_module(status)
+    css = _CSS.replace("__ACCENT__", accent)
+    t = html.escape(title)
     table_rows = "".join(
         f"<tr><td>{html.escape(str(s.get('module', '')))}</td>"
         f"<td>{'OK' if s.get('ok') else 'FALLO'}</td>"
@@ -367,17 +487,22 @@ def render_html(
     sections: list[str] = [
         "<!doctype html><html lang=es><head><meta charset=utf-8>"
         '<meta name=viewport content="width=device-width,initial-scale=1">'
-        f"<meta http-equiv=refresh content={_REFRESH_SECONDS}>"
-        f"<title>izumi · panel</title><style>{_CSS}</style></head><body><div class=wrap>",
-        "<h1>izumi · panel de salud</h1>",
-        f'<p class="sub">generado {html.escape(generated)} · se actualiza cada '
-        f"{_REFRESH_SECONDS}s</p>",
+        f'<link rel=icon href="{_FAVICON}">'
+        f"<title>{t}</title><style>{css}</style></head>"
+        f'<body data-gen="{nowsec:.0f}"><div id=tip></div><div class=wrap>',
+        f"<h1>{t}</h1>",
+        f'<p class="sub">generado {html.escape(generated)} · <span id=age></span></p>',
     ]
     if ai_summary.strip():
         sections.append(f'<div class="ai">🧠 {md_lite(ai_summary)}</div>')
     if status:
         sections.append(_kpis(status))
         sections.append(f'<h2>Estado</h2><div class="tiles">{_status_tiles(status, sparks)}</div>')
+    trends = _trends(sparks)
+    if trends:
+        sections.append(trends)
+    if incidents:
+        sections.append(render_incidents(incidents, nowsec=nowsec))
     if cards:
         sections.append(
             '<div class="tools"><input id=q placeholder="filtrar módulos…">'
@@ -506,7 +631,40 @@ def run(ctx: RunContext, *, llm: LLM | None = None, now: str | None = None) -> M
             except Exception:  # Ollama down / not configured → omit the summary, no failure
                 ai_summary = ""
 
-    page = render_html(status, sparks, cards, ai_summary=ai_summary, generated=when)
+    # Incident timeline (best-effort read of the shared incident cache).
+    incidents: list[dict[str, object]] = []
+    inc_db = reports / "cache" / "incidents.db"
+    if inc_db.is_file():
+        try:
+            from core.cache import SqliteCache
+
+            with SqliteCache(inc_db) as sc:
+                incidents = [
+                    {
+                        "module": i.module,
+                        "title": i.title,
+                        "status": i.status,
+                        "last_seen": i.last_seen,
+                    }
+                    for i in sc.recent_all(limit=40)
+                ]
+        except Exception:  # pragma: no cover - defensive
+            incidents = []
+
+    wcfg = ctx.config.integrations.get("webdashboard", {})
+    title = wcfg.get("title")
+    accent = wcfg.get("accent")
+    page = render_html(
+        status,
+        sparks,
+        cards,
+        incidents,
+        ai_summary=ai_summary,
+        title=title if isinstance(title, str) and title.strip() else "izumi · panel de salud",
+        accent=accent if isinstance(accent, str) and accent.strip() else "#2a78d6",
+        nowsec=time.time(),
+        generated=when,
+    )
     reports.mkdir(parents=True, exist_ok=True)
     (reports / "index.html").write_text(page, encoding="utf-8")
 

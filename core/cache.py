@@ -361,6 +361,32 @@ class SqliteCache:
             )
         return incidents
 
+    def recent_all(self, *, limit: int = 50) -> list[Incident]:
+        """All incidents across modules, newest ``last_seen`` first (for a timeline)."""
+        rows = self._conn.execute(
+            "SELECT fingerprint, module, severity, title, first_seen, last_seen, "
+            "status, recommended, applied FROM incidents ORDER BY last_seen DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        incidents: list[Incident] = []
+        for row in rows:
+            recommended = json.loads(row[7]) if row[7] else []
+            applied = json.loads(row[8]) if row[8] else []
+            incidents.append(
+                Incident(
+                    fingerprint=row[0],
+                    module=row[1],
+                    severity=row[2],
+                    title=row[3],
+                    first_seen=row[4],
+                    last_seen=row[5],
+                    status=row[6],
+                    recommended=recommended if isinstance(recommended, list) else [],
+                    applied=applied if isinstance(applied, list) else [],
+                )
+            )
+        return incidents
+
     def resolve_incident(self, fingerprint: str, *, applied: Iterable[object]) -> None:
         """Mark an incident resolved and record the actions that were applied."""
         self._conn.execute(
