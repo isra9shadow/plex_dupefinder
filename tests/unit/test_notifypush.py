@@ -154,6 +154,37 @@ def test_live_sends_when_enabled_and_secrets_present(
     assert _read_plan(tmp_path)["sent"] is True
 
 
+def test_live_also_sends_to_discord_when_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    _write_summary(tmp_path, "uptime", "servicios ok")
+    monkeypatch.setenv("IZUMI_TELEGRAM_BOT_TOKEN", "T0KEN")
+    monkeypatch.setenv("IZUMI_TELEGRAM_CHAT_ID", "12345")
+    monkeypatch.setenv("IZUMI_DISCORD_WEBHOOK", "https://hook")
+    import core.secrets as secrets
+
+    secrets.reset_cache()
+
+    posted: list[tuple[str, str]] = []
+    ctx = _enable_notify(make_context(tmp_path, mode=SafetyMode.LIVE))
+    cfg = replace(
+        ctx.config,
+        integrations={"notifypush": {"discord_webhook_ref": "IZUMI_DISCORD_WEBHOOK"}},
+    )
+    ctx = replace(ctx, config=cfg)
+
+    result = notifypush.run(
+        ctx,
+        sender=lambda t, c, x: True,
+        discord_sender=lambda url, text: posted.append((url, text)) or True,
+        now="2026-07-06 03:00",
+    )
+    assert result.metrics["discord_sent"] == 1.0
+    assert posted and posted[0][0] == "https://hook"
+
+
 def test_live_send_failure_is_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_summary(tmp_path, "uptime", "ok")
     monkeypatch.setenv("IZUMI_TELEGRAM_BOT_TOKEN", "T0KEN")

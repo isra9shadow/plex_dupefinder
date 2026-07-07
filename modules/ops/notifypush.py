@@ -41,10 +41,12 @@ from pathlib import Path
 from core.registry import register
 from core.secrets import get_secret
 from core.types import FailureRecord, ModuleResult, RunContext, SafetyMode
-from integrations import telegram
+from integrations import discord, telegram
 
 # (token, chat_id, text) -> delivered? Injected so tests never touch the network.
 Sender = Callable[[str, str, str], bool]
+# (webhook_url, text) -> delivered? Second (optional) channel.
+DiscordSender = Callable[[str, str], bool]
 
 _DEFAULT_SOURCES = (
     "uptime",
@@ -69,6 +71,7 @@ class _Settings:
     sources: tuple[str, ...]
     title: str
     max_section_chars: int
+    discord_webhook_ref: str | None
 
 
 def _str_list(raw: object) -> list[str]:
@@ -82,6 +85,7 @@ def _settings(ctx: RunContext) -> _Settings:
     sources = tuple(_str_list(cfg.get("sources"))) or _DEFAULT_SOURCES
     title = cfg.get("title")
     max_chars = cfg.get("max_section_chars")
+    webhook_ref = cfg.get("discord_webhook_ref")
     return _Settings(
         sources=sources,
         title=title if isinstance(title, str) and title.strip() else _DEFAULT_TITLE,
@@ -90,7 +94,12 @@ def _settings(ctx: RunContext) -> _Settings:
             if isinstance(max_chars, int) and not isinstance(max_chars, bool) and max_chars > 0
             else _DEFAULT_MAX_SECTION
         ),
+        discord_webhook_ref=webhook_ref if isinstance(webhook_ref, str) and webhook_ref else None,
     )
+
+
+def _default_discord_sender(webhook_url: str, text: str) -> bool:
+    return discord.send_webhook(webhook_url, text)
 
 
 def _read_summary(reports_dir: Path, subdir: str) -> str:
@@ -162,12 +171,14 @@ def run(
     ctx: RunContext,
     *,
     sender: Sender = _default_sender,
+    discord_sender: DiscordSender = _default_discord_sender,
     now: str | None = None,
 ) -> ModuleResult:
     """Compose the digest from the latest module summaries and (in LIVE) push it.
 
-    ``sender`` and ``now`` are injected so tests run offline and deterministically.
-    In DRY_RUN (default) the digest is written to this module's report but NOT sent.
+    Sends to Telegram and, if ``integrations.notifypush.discord_webhook_ref`` is set,
+    also to a Discord webhook (second channel). ``sender``/``discord_sender``/``now``
+    are injected so tests run offline. In DRY_RUN (default) nothing is sent.
     """
     result = ModuleResult(module="notifypush", run_id=ctx.run_id, mode=ctx.mode)
     settings = _settings(ctx)
@@ -180,6 +191,7 @@ def run(
     digest = build_digest(sections, title=settings.title, when=when)
 
     sent = False
+    discord_sent = False
     note = ""
     if dry_run:
         note = "DRY-RUN: digest compuesto pero NO enviado (usa modo live para enviar)."
@@ -191,7 +203,7 @@ def run(
         if not token or not chat_id:
             note = (
                 f"faltan secretos {ctx.config.notify.token_ref} / "
-                f"{ctx.config.notify.chat_id_ref} (.env) — no se envía."
+                f"{ctx.config.notify.chat_id_ref} (.env) — no se envía por Telegram."
             )
             result.add_failure(FailureRecord(category="config", message=note))
         else:
@@ -203,15 +215,29 @@ def run(
                         message="Telegram no confirmó el envío del informe.",
                     )
                 )
+        # Optional second channel: Discord webhook.
+        if settings.discord_webhook_ref:
+            webhook = get_secret(settings.discord_webhook_ref, required=False)
+            if webhook:
+                discord_sent = discord_sender(webhook, digest)
+                if not discord_sent:
+                    result.add_failure(
+                        FailureRecord(
+                            category="integration",
+                            message="Discord no confirmó el envío del informe.",
+                        )
+                    )
 
-    _write_report(ctx, digest, sent, dry_run, note)
+    _write_report(ctx, digest, sent or discord_sent, dry_run, note)
     ctx.logger.info(
         "notifypush done",
         sections=len(sections),
         sent=sent,
+        discord=discord_sent,
         dry_run=dry_run,
     )
     result.metrics["sections"] = float(len(sections))
     result.metrics["sent"] = 1.0 if sent else 0.0
-    result.actions = 1 if sent else 0
+    result.metrics["discord_sent"] = 1.0 if discord_sent else 0.0
+    result.actions = (1 if sent else 0) + (1 if discord_sent else 0)
     return result

@@ -162,6 +162,7 @@
     "notifypush": {
       "title": "izumi · informe",
       "max_section_chars": 1200,
+      "discord_webhook_ref": "IZUMI_DISCORD_WEBHOOK",
       "sources": ["uptime", "diskwatch", "dbcheck", "status", "permsdoctor", "backupaudit", "netdoctor", "autoheal", "analyst", "logwatch"]
     }
   }
