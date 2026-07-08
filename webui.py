@@ -29,8 +29,12 @@ import hmac
 import http.server
 import json
 import os
+import queue
 import socketserver
 import sys
+import threading
+import time
+import uuid
 from functools import partial
 from io import BytesIO
 
@@ -209,31 +213,102 @@ def humanize_action_result(action: str, rc: int, reports_dir: str) -> str:
     return f"{action}: terminó con incidencias — abre el informe en el panel para el detalle"
 
 
-def _run_platform_action(
-    action: str, *, dry_run: bool = False
-) -> tuple[bool, str]:  # pragma: no cover - needs the platform
-    """Run a whitelisted module/pipeline in-process (container only).
+# --- background jobs -----------------------------------------------------------
+# A module/pipeline runs OFF the request thread so the UI shows live progress
+# (floating, minimisable) instead of blocking. One worker runs jobs serially — the
+# platform uses process-global logging/metrics, so parallel runs would clash.
+_JOBS: dict[str, dict[str, object]] = {}
+_JOBS_LOCK = threading.Lock()
+_JOB_QUEUE: queue.Queue[str] = queue.Queue()
+_WORKER: threading.Thread | None = None
 
-    ``dry_run`` forces DRY_RUN mode so an acting module (organizer/extractor/…) only
-    SIMULATES from the web; a live run happens only when the caller passes
-    ``dry_run=False`` (after the confirm dialog). Read-only modules ignore the mode.
-    """
+
+def _new_job(action: str, *, dry_run: bool) -> str:
+    jid = uuid.uuid4().hex[:8]
+    with _JOBS_LOCK:
+        _JOBS[jid] = {
+            "id": jid,
+            "action": action,
+            "dry_run": dry_run,
+            "state": "queued",
+            "started": 0.0,
+            "finished": 0.0,
+            "step": 0,
+            "total": 0,
+            "current": "",
+            "message": "",
+            "ok": False,
+        }
+    return jid
+
+
+def _update_job(jid: str, **fields: object) -> None:
+    with _JOBS_LOCK:
+        if jid in _JOBS:
+            _JOBS[jid].update(fields)
+
+
+def jobs_snapshot(limit: int = 20) -> list[dict[str, object]]:
+    """Recent jobs, newest first (GET /api/jobs) — a pure read of the registry."""
+    with _JOBS_LOCK:
+        jobs = [dict(j) for j in _JOBS.values()]
+    jobs.sort(key=lambda j: float(j.get("started") or 0.0), reverse=True)
+    return jobs[:limit]
+
+
+def _execute_job(jid: str) -> None:  # pragma: no cover - needs the platform
+    """Run one job's module/pipeline, updating its progress step by step."""
     from core import config as config_mod
     from core import registry
     from core.types import SafetyMode
-    from run import _run_module, _run_pipeline, build_context
+    from run import _run_module, build_context
 
+    with _JOBS_LOCK:
+        action = str(_JOBS[jid]["action"])
+        dry_run = bool(_JOBS[jid]["dry_run"])
+    _update_job(jid, state="running", started=time.time())
     cfg = config_mod.load()
     if dry_run:
         cfg = config_mod.with_mode(cfg, SafetyMode.DRY_RUN)
     registry.discover()
     ctx = build_context(cfg)
     if action in cfg.pipelines:
-        rc = _run_pipeline(ctx, action, cfg.pipelines[action])
+        mods = list(cfg.pipelines[action])
+        total = len(mods)
+        _update_job(jid, total=total)
+        rc = 0
+        for i, mod in enumerate(mods, 1):
+            _update_job(jid, step=i, current=mod)
+            rc = _run_module(ctx, mod) or rc
     else:
+        total = 1
+        _update_job(jid, total=1, step=1, current=action)
         rc = _run_module(ctx, action)
     prefix = "(simulación) " if dry_run else ""
-    return rc == 0, prefix + humanize_action_result(action, rc, str(cfg.reporting.dir))
+    msg = prefix + humanize_action_result(action, rc, str(cfg.reporting.dir))
+    _update_job(jid, state="done", ok=rc == 0, message=msg, step=total, finished=time.time())
+
+
+def _worker_loop() -> None:  # pragma: no cover - background thread
+    while True:
+        jid = _JOB_QUEUE.get()
+        try:
+            _execute_job(jid)
+        except Exception as exc:  # a broken job must never kill the worker
+            _update_job(jid, state="error", message=f"error: {exc}", finished=time.time())
+        finally:
+            _JOB_QUEUE.task_done()
+
+
+def enqueue_job(action: str, *, dry_run: bool) -> str:
+    """Register + queue a job (starting the worker on first use); returns the job id."""
+    global _WORKER
+    if _WORKER is None or not _WORKER.is_alive():
+        _WORKER = threading.Thread(target=_worker_loop, name="izumi-jobs", daemon=True)
+        _WORKER.start()
+    jid = _new_job(action, dry_run=dry_run)
+    _JOB_QUEUE.put(jid)
+    return jid
 
 
 def _ask_assistant(question: str) -> tuple[bool, str]:  # pragma: no cover - needs the platform
@@ -311,6 +386,9 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
         if route == "/api/status":
             self._json(200, status_snapshot(self.directory))
             return
+        if route == "/api/jobs":
+            self._json(200, {"jobs": jobs_snapshot()})
+            return
         if route == "/api/export":
             body = export_markdown(self.directory).encode("utf-8")
             self.send_response(200)
@@ -338,6 +416,7 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
             data = {}
         token = str(data.get("token", ""))
         expected = os.environ.get(_API_TOKEN_ENV, "")
+        extra: dict[str, object] = {}
         try:
             if path == "/api/run":
                 action = str(data.get("action", ""))
@@ -345,9 +424,10 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 if ok:
                     # Acting modules default to DRY_RUN unless the client explicitly
                     # asked for a live run (dry_run=false, sent after the confirm dialog).
+                    # The run happens on a worker thread; we return a job id to track.
                     dry_run = bool(data.get("dry_run", action in _ACTING_ACTIONS))
-                    ok, detail = _run_platform_action(action, dry_run=dry_run)
-                    code, msg = (200 if ok else 500), detail
+                    extra["job_id"] = enqueue_job(action, dry_run=dry_run)
+                    code, msg = 200, f"lanzado: {action}"
             elif path == "/api/ask":
                 ok, code, msg = check_token(token, expected_token=expected)
                 if ok:
@@ -360,7 +440,7 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
                     code, msg = (200 if ok else 400), detail
         except Exception as exc:  # never crash the server on a handler error
             ok, code, msg = False, 500, f"No se pudo completar la acción: {exc}"
-        self._json(code, {"ok": ok and code == 200, "message": msg})
+        self._json(code, {"ok": ok and code == 200, "message": msg, **extra})
 
 
 def default_reports_dir() -> str:
@@ -387,6 +467,13 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+class _ThreadingServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    """Threaded server so a running job never blocks status polling / other requests."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse(argv)
     directory = args.dir or default_reports_dir()
@@ -394,7 +481,7 @@ def main(argv: list[str] | None = None) -> int:
         os.makedirs(directory, exist_ok=True)
     handler = partial(_DashboardHandler, directory=directory)
     print(f"izumi web UI serving {directory} on http://{args.host}:{args.port}", file=sys.stderr)
-    with socketserver.TCPServer((args.host, args.port), handler) as httpd:
+    with _ThreadingServer((args.host, args.port), handler) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:  # pragma: no cover - manual stop

@@ -82,6 +82,27 @@ def test_api_rejects_non_whitelisted_action() -> None:
     assert not ok and code == 400 and "no permitida" in msg  # unknown action never runs
 
 
+def test_jobs_registry_tracks_progress() -> None:
+    webui._JOBS.clear()
+    jid = webui._new_job("dbcheck", dry_run=False)
+    assert webui._JOBS[jid]["state"] == "queued"
+    webui._update_job(jid, state="running", started=100.0, step=2, total=3, current="netdoctor")
+    snap = webui.jobs_snapshot()
+    job = next(j for j in snap if j["id"] == jid)
+    assert job["state"] == "running" and job["total"] == 3 and job["current"] == "netdoctor"
+
+
+def test_jobs_snapshot_newest_first_and_capped() -> None:
+    webui._JOBS.clear()
+    for i in range(25):
+        jid = webui._new_job(f"m{i}", dry_run=False)
+        webui._update_job(jid, started=float(i))
+    snap = webui.jobs_snapshot()
+    assert len(snap) == 20  # capped
+    assert float(snap[0]["started"]) >= float(snap[-1]["started"])  # newest first
+    webui._JOBS.clear()
+
+
 def test_api_allows_acting_modules() -> None:
     # Acting modules are whitelisted (they run dry-run by default; live only when the
     # client asks after confirming). The apply allow-list still gates raw commands.

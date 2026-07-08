@@ -230,6 +230,26 @@ details.actions[open]>summary::before{content:"▾ "}
   background:var(--surface);color:var(--ink);font:12px system-ui}
 .abtn.go{background:var(--accent);color:#fff;border-color:transparent}
 .abtn:disabled{cursor:progress;opacity:.6}
+/* procesos en marcha — flotantes abajo-izquierda, minimizables, con progreso */
+#jobs{position:fixed;left:16px;bottom:16px;display:flex;flex-direction:column-reverse;gap:8px;
+  z-index:65;max-width:340px}
+.job{background:var(--surface);border:1px solid var(--ring);border-left:4px solid var(--spark);
+  border-radius:10px;padding:9px 12px;box-shadow:0 8px 28px rgba(0,0,0,.3);font-size:13px;
+  animation:izin .18s ease}
+.job.done{border-left-color:var(--good)} .job.err{border-left-color:var(--critical)}
+.job .jh{display:flex;align-items:center;gap:8px}
+.job .jt{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.job .jpct{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;margin-left:auto}
+.job .jbtns{display:flex;gap:2px}
+.job .jbtns button{border:none;background:none;color:var(--muted);cursor:pointer;font-size:13px;
+  padding:0 3px;line-height:1}
+.job .jbar{height:6px;border-radius:4px;background:var(--grid);overflow:hidden;margin:8px 0 6px}
+.job .jbar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s ease}
+.job .jbar.ind i{width:40%;animation:izslide 1.1s ease-in-out infinite}
+@keyframes izslide{0%{margin-left:-45%}100%{margin-left:105%}}
+.job .jmeta{display:flex;justify-content:space-between;color:var(--muted);font-size:11.5px}
+.job .jmsg{margin-top:6px;color:var(--ink2);font-size:12px}
+.job.min{padding:7px 12px} .job.min .jb{display:none}
 """
 
 _JS = r"""
@@ -288,15 +308,14 @@ document.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',as
     if(!okc)return;
   }
   const t=await askToken(); if(!t)return;
-  const o=b.innerHTML; b.disabled=true; b.innerHTML=SP+(dry?'simulando…':'ejecutando…');
+  const o=b.innerHTML; b.disabled=true; b.innerHTML=SP+'lanzando…';
   try{const r=await fetch('/api/run',{method:'POST',
       headers:{'content-type':'application/json'},
       body:JSON.stringify({action:act,token:t,dry_run:dry})});
-    const j=await r.json();
-    if(!j.ok && /token/.test(j.message||'')) localStorage.removeItem('izumi_tok');
-    b.innerHTML=o; b.disabled=false;
-    if(j.ok){toast(j.message||'hecho','ok');setTimeout(()=>location.reload(),1000);}
-    else{toast(j.message||'error','err');}
+    const j=await r.json(); b.innerHTML=o; b.disabled=false;
+    if(j.ok && j.job_id){addJob(j.job_id,act,dry); pollJobs();}
+    else{if(/token/.test(j.message||'')) localStorage.removeItem('izumi_tok');
+      toast(j.message||'error','err');}
   }catch(e){b.innerHTML=o; b.disabled=false; toast('error de red','err');}
 }));
 const tip=document.getElementById('tip');
@@ -313,11 +332,60 @@ function fa(s){s=Math.max(0,s|0);
 if(age){const u=()=>{age.textContent='actualizado '+fa(Date.now()/1000-gen);};
   u(); setInterval(u,1000);}
 let lm=null;
-setInterval(async()=>{try{
+async function checkReload(){try{
   const r=await fetch('/',{method:'HEAD',cache:'no-store'});
   const m=r.headers.get('Last-Modified');
   if(lm&&m&&m!==lm){location.reload();} lm=m;
-}catch(e){}},30000);
+}catch(e){}}
+checkReload(); setInterval(checkReload,30000);
+// --- procesos en marcha: widgets flotantes (abajo-izq), minimizables, con progreso ---
+const JOBS={};
+function jobsBox(){let c=document.getElementById('jobs');
+  if(!c){c=document.createElement('div');c.id='jobs';document.body.appendChild(c);}return c;}
+function fmtEl(s){s=Math.max(0,s|0);const m=s/60|0;return m?m+'m '+(s%60)+'s':s+'s';}
+function addJob(id,action,dry){const el=document.createElement('div');
+  el.className='job';el.dataset.id=id;
+  el.innerHTML='<div class="jh"><span class="jt"></span><span class="jpct">'+SP+'</span>'
+    +'<span class="jbtns"><button class="jmin" title="minimizar/maximizar">▁</button>'
+    +'<button class="jx" title="cerrar" style="display:none">✕</button></span></div>'
+    +'<div class="jb"><div class="jbar ind"><i></i></div>'
+    +'<div class="jmeta"><span class="jstep">en cola…</span><span class="jel"></span></div>'
+    +'<div class="jmsg"></div></div>';
+  el.querySelector('.jt').textContent=(dry?'▷ ':'▶ ')+action;
+  const mb=el.querySelector('.jmin');
+  mb.onclick=()=>{el.classList.toggle('min');
+    mb.textContent=el.classList.contains('min')?'▢':'▁';};
+  el.querySelector('.jx').onclick=()=>{el.remove();delete JOBS[id];};
+  jobsBox().appendChild(el);JOBS[id]={el,state:'queued'};return el;}
+function renderJob(j){const o=JOBS[j.id];if(!o)return;const el=o.el;
+  const running=j.state==='running'||j.state==='queued';
+  const bar=el.querySelector('.jbar'),fill=bar.querySelector('i'),pct=el.querySelector('.jpct');
+  const step=el.querySelector('.jstep'),elp=el.querySelector('.jel'),msg=el.querySelector('.jmsg');
+  if(j.total>1){bar.classList.remove('ind');fill.style.width=Math.round(100*j.step/j.total)+'%';
+    step.textContent=j.step+'/'+j.total+(j.current?' · '+j.current:'');
+    pct.textContent=running?j.step+'/'+j.total:'';}
+  else{bar.classList.toggle('ind',running);fill.style.width='100%';
+    step.textContent=j.current||'';pct.textContent='';}
+  const t1=j.finished||Date.now()/1000;elp.textContent=fmtEl(t1-(j.started||t1));
+  if(!running){bar.classList.remove('ind');fill.style.width='100%';
+    el.classList.toggle('done',j.state==='done');el.classList.toggle('err',j.state==='error');
+    pct.innerHTML=j.state==='done'?'✓':'✕';msg.textContent=j.message||'';
+    el.querySelector('.jx').style.display='';}
+}
+let jobsPoll=null;
+function pollJobs(){if(jobsPoll)return;
+  jobsPoll=setInterval(async()=>{
+    if(!Object.keys(JOBS).length){clearInterval(jobsPoll);jobsPoll=null;return;}
+    try{const r=await fetch('/api/jobs',{cache:'no-store'});const d=await r.json();
+      let refresh=false;
+      (d.jobs||[]).forEach(j=>{const o=JOBS[j.id];if(!o)return;
+        const was=o.state;renderJob(j);o.state=j.state;
+        if((j.state==='done'||j.state==='error')&&was&&was!=='done'&&was!=='error'){
+          toast(j.message||j.action,j.state==='done'?'ok':'err');refresh=true;}});
+      if(refresh)checkReload();
+    }catch(e){}
+  },1500);
+}
 // --- aplicar comando (confirm modal + toast, nunca alert nativo) ---
 async function applyCmd(cmd,btn){
   if(!await askConfirm(cmd))return; const t=await askToken(); if(!t)return;
