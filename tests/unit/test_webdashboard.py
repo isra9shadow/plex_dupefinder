@@ -22,6 +22,27 @@ def test_exec_prompt_is_actionable_and_spanish_only() -> None:
     assert "### configcheck" in prompt and "### backupaudit" in prompt
 
 
+def test_bad_card_shows_attention_badge() -> None:
+    # A red card must carry a human label, never a bare "0 fallos" mystery.
+    out = webdashboard._one_card("dbcheck", "1 corrupt db", {"dbcheck": "bad"})
+    assert 'class="badge bad"' in out and "atención" in out
+    warn = webdashboard._one_card("logwatch", "errores: 17", {"logwatch": "good"})
+    assert 'class="badge warn"' in warn and "aviso" in warn
+
+
+def test_render_includes_colour_legend() -> None:
+    out = webdashboard.render_html([], {}, [], generated="now")
+    assert 'class="legend"' in out
+    assert "aviso" in out and "atención" in out
+
+
+def test_web_ui_has_no_native_dialogs() -> None:
+    # The panel must use the custom toast/modal, not blocking alert()/confirm()/prompt().
+    js = webdashboard._JS
+    assert "function toast(" in js and "function askConfirm(" in js and "function askToken(" in js
+    assert "alert(" not in js and "confirm(" not in js and "prompt(" not in js
+
+
 def test_sparkline_flat_and_series() -> None:
     assert "<line" in webdashboard.sparkline_svg([5.0])
     assert "<polyline" in webdashboard.sparkline_svg([1.0, 2.0, 3.0])

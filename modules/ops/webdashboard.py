@@ -183,26 +183,94 @@ button:disabled{cursor:progress}
   border:2px solid var(--ring);border-top-color:var(--accent);border-radius:50%;
   animation:izspin .7s linear infinite}
 .wait{animation:izpulse 1s ease-in-out infinite}
+/* status badge on each card (coherent with the border colour) */
+.badge{font-size:11.5px;font-weight:600;padding:1px 8px;border-radius:999px;
+  border:1px solid var(--ring);white-space:nowrap;margin-left:8px}
+.badge.good{color:var(--good)} .badge.warn{color:var(--warn)} .badge.bad{color:var(--critical)}
+.legend{color:var(--muted);font-size:12px;margin:0 0 14px;display:flex;gap:14px;flex-wrap:wrap}
+.legend b{font-weight:600}
+.legend .d{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;
+  vertical-align:0}
+.legend .d.good{background:var(--good)} .legend .d.warn{background:var(--warn)}
+.legend .d.bad{background:var(--critical)}
+/* toasts + modal — replace the native alert()/confirm()/prompt() */
+#toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:60}
+.toast{background:var(--surface);border:1px solid var(--ring);border-left:4px solid var(--spark);
+  border-radius:9px;padding:10px 14px 10px 12px;font-size:13px;color:var(--ink);max-width:380px;
+  box-shadow:0 8px 28px rgba(0,0,0,.28);animation:izin .18s ease}
+.toast.ok{border-left-color:var(--good)} .toast.err{border-left-color:var(--critical)}
+.toast .x{float:right;margin-left:14px;cursor:pointer;color:var(--muted)}
+@keyframes izin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.ovl{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;
+  justify-content:center;z-index:70}
+.dlg{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:18px 20px;
+  max-width:460px;width:calc(100% - 32px);box-shadow:0 16px 48px rgba(0,0,0,.45)}
+.dlg h4{margin:0 0 8px;font-size:15px} .dlg p{margin:0 0 12px;color:var(--ink2);font-size:13px}
+.dlg code{display:block;background:var(--plane);padding:9px 11px;border-radius:7px;
+  font:12px ui-monospace,monospace;word-break:break-all;margin:0 0 14px;color:var(--ink)}
+.dlg input{width:100%;padding:9px 11px;border:1px solid var(--ring);border-radius:8px;
+  background:var(--plane);color:var(--ink);font:14px system-ui;margin:0 0 14px}
+.dlg .row{display:flex;gap:8px;justify-content:flex-end}
+.dlg button{padding:8px 14px;border:1px solid var(--ring);border-radius:8px;cursor:pointer;
+  font:13px system-ui;background:var(--surface);color:var(--ink)}
+.dlg button.primary{background:var(--accent);color:#fff;border-color:transparent}
 """
 
 _JS = r"""
 <script>
 const SP='<span class="spin"></span>';  // little rotating spinner shown while waiting
+// --- non-blocking toast + styled modal (replace native alert/confirm/prompt) ---
+function toast(msg,kind){let c=document.getElementById('toasts');
+  if(!c){c=document.createElement('div');c.id='toasts';document.body.appendChild(c);}
+  const t=document.createElement('div');t.className='toast '+(kind||'');
+  const x=document.createElement('span');x.className='x';x.textContent='✕';x.onclick=()=>t.remove();
+  t.appendChild(x);t.appendChild(document.createTextNode(String(msg||'')));
+  c.appendChild(t);setTimeout(()=>t.remove(),7000);}
+function modal(build){return new Promise(res=>{
+  const ovl=document.createElement('div');ovl.className='ovl';
+  const dlg=document.createElement('div');dlg.className='dlg';ovl.appendChild(dlg);
+  ovl.addEventListener('click',e=>{if(e.target===ovl)fin(null);});
+  const fin=v=>{ovl.remove();document.removeEventListener('keydown',esc);res(v);};
+  const esc=e=>{if(e.key==='Escape')fin(null);};
+  document.addEventListener('keydown',esc);document.body.appendChild(ovl);build(dlg,fin);});}
+function askConfirm(cmd){return modal((d,fin)=>{
+  d.innerHTML='<h4>¿Aplicar este comando?</h4><p>Se ejecutará en el servidor, que lo revalida '
+    +'contra la allow-list de seguridad:</p><code></code>'
+    +'<div class="row"><button class="cancel">Cancelar</button>'
+    +'<button class="primary go">Aplicar</button></div>';
+  d.querySelector('code').textContent=cmd;
+  d.querySelector('.cancel').onclick=()=>fin(false);
+  d.querySelector('.go').onclick=()=>fin(true);});}
+function askToken(){const s=localStorage.getItem('izumi_tok');if(s)return Promise.resolve(s);
+  return modal((d,fin)=>{
+  d.innerHTML='<h4>Token del panel</h4><p>Introduce IZUMI_WEB_TOKEN para ejecutar acciones. '
+    +'Se guarda solo en este navegador.</p><input type="password" placeholder="token">'
+    +'<div class="row"><button class="cancel">Cancelar</button>'
+    +'<button class="primary go">Guardar</button></div>';
+  const inp=d.querySelector('input');setTimeout(()=>inp.focus(),30);
+  const ok=()=>{const v=inp.value.trim();
+    if(v){localStorage.setItem('izumi_tok',v);fin(v);}else fin(null);};
+  d.querySelector('.go').onclick=ok;
+  inp.addEventListener('keydown',e=>{if(e.key==='Enter')ok();});
+  d.querySelector('.cancel').onclick=()=>fin(null);});}
+// --- filtro de tarjetas ---
 const q=document.getElementById('q');
 if(q){q.addEventListener('input',()=>{const v=q.value.toLowerCase();
   document.querySelectorAll('.card').forEach(c=>{
     c.style.display=c.dataset.name.includes(v)?'':'none';});});}
+// --- ejecutar módulo/pipeline ---
 document.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',async()=>{
-  let t=localStorage.getItem('izumi_tok')||prompt('Token (IZUMI_WEB_TOKEN):');
-  if(!t)return; localStorage.setItem('izumi_tok',t);
+  const t=await askToken(); if(!t)return;
   const o=b.innerHTML; b.disabled=true; b.innerHTML=SP+'ejecutando…';
   try{const r=await fetch('/api/run',{method:'POST',
       headers:{'content-type':'application/json'},
       body:JSON.stringify({action:b.dataset.act,token:t})});
     const j=await r.json();
     if(!j.ok && /token/.test(j.message||'')) localStorage.removeItem('izumi_tok');
-    b.innerHTML=o; b.disabled=false; if(j.ok){location.reload();}else{alert(j.message||'error');}
-  }catch(e){b.innerHTML=o; b.disabled=false; alert('error de red');}
+    b.innerHTML=o; b.disabled=false;
+    if(j.ok){toast(j.message||'hecho','ok');setTimeout(()=>location.reload(),800);}
+    else{toast(j.message||'error','err');}
+  }catch(e){b.innerHTML=o; b.disabled=false; toast('error de red','err');}
 }));
 const tip=document.getElementById('tip');
 if(tip){document.querySelectorAll('.chart .pt').forEach(p=>{
@@ -223,17 +291,17 @@ setInterval(async()=>{try{
   const m=r.headers.get('Last-Modified');
   if(lm&&m&&m!==lm){location.reload();} lm=m;
 }catch(e){}},30000);
-function tok(){let t=localStorage.getItem('izumi_tok')||prompt('Token (IZUMI_WEB_TOKEN):');
-  if(t)localStorage.setItem('izumi_tok',t); return t;}
+// --- aplicar comando (confirm modal + toast, nunca alert nativo) ---
 async function applyCmd(cmd,btn){
-  if(!confirm('Aplicar: '+cmd+' ?'))return; const t=tok(); if(!t)return;
+  if(!await askConfirm(cmd))return; const t=await askToken(); if(!t)return;
   const o=btn.innerHTML; btn.disabled=true; btn.innerHTML=SP+'aplicando…';
   try{const r=await fetch('/api/apply',{method:'POST',
     headers:{'content-type':'application/json'},
     body:JSON.stringify({command:cmd,token:t})});
-    const j=await r.json(); alert(j.message||'');
-    if(j.ok){location.reload();}else{btn.innerHTML=o; btn.disabled=false;}
-  }catch(e){alert('error de red'); btn.innerHTML=o; btn.disabled=false;}
+    const j=await r.json();
+    if(j.ok){toast(j.message||'aplicado','ok');setTimeout(()=>location.reload(),800);}
+    else{toast(j.message||'no aplicado','err'); btn.innerHTML=o; btn.disabled=false;}
+  }catch(e){toast('error de red','err'); btn.innerHTML=o; btn.disabled=false;}
 }
 document.querySelectorAll('[data-cmd]').forEach(b=>
   b.addEventListener('click',()=>applyCmd(b.dataset.cmd,b)));
@@ -252,7 +320,7 @@ function fixcmd(txt){
 }
 document.querySelectorAll('.fixai').forEach(b=>b.addEventListener('click',async()=>{
   const mod=b.dataset.mod, box=document.getElementById('ai-'+mod);
-  const t=tok(); if(!t)return; b.disabled=true;
+  const t=await askToken(); if(!t)return; b.disabled=true;
   box.style.display='block'; box.className='aians wait'; box.innerHTML=SP+'pensando…';
   const qq='¿Cómo arreglo el problema de '+mod+'? Da el comando exacto '
     +'(docker restart/chmod/chown) si aplica, si no explica el paso.';
@@ -270,7 +338,7 @@ document.querySelectorAll('.fixai').forEach(b=>b.addEventListener('click',async(
 const asb=document.getElementById('asb');
 if(asb){asb.addEventListener('click',async()=>{
   const ask=document.getElementById('ask'), ans=document.getElementById('ans');
-  const qq=(ask.value||'').trim(); if(!qq)return; const t=tok(); if(!t)return;
+  const qq=(ask.value||'').trim(); if(!qq)return; const t=await askToken(); if(!t)return;
   asb.disabled=true; ans.style.display='block'; ans.classList.add('wait');
   ans.innerHTML=SP+'pensando…';
   try{const r=await fetch('/api/ask',{method:'POST',
@@ -492,9 +560,19 @@ def _status_tiles(
     return "".join(tiles)
 
 
+# Card colour → human status badge, so a red/amber card is never a bare "0 fallos".
+_BADGE: dict[str, tuple[str, str]] = {
+    "bad": ("bad", "atención"),
+    "warn": ("warn", "aviso"),
+    "good": ("good", "ok"),
+}
+
+
 def _one_card(module: str, summary: str, status: dict[str, str]) -> str:
     m = html.escape(module)
     cls = card_severity(summary, status.get(module, ""))
+    bcls, blabel = _BADGE.get(cls, ("", ""))
+    badge = f'<span class="badge {bcls}">{blabel}</span>' if blabel else ""
     # For a problem card, offer an on-demand AI fix suggestion (Ollama via /api/ask).
     fix = ""
     if cls in ("bad", "warn"):
@@ -503,7 +581,7 @@ def _one_card(module: str, summary: str, status: dict[str, str]) -> str:
             f'<div class="aians" id="ai-{m}"></div>'
         )
     return (
-        f'<div class="card {cls}" data-name="{m.lower()}"><h3>{m}'
+        f'<div class="card {cls}" data-name="{m.lower()}"><h3><span>{m}{badge}</span>'
         f'<a href="{m}/">ver informe →</a></h3>'
         f'<div class="b">{md_lite(summary)}</div>{fix}</div>'
     )
@@ -594,6 +672,10 @@ def render_html(
         f'<body data-gen="{nowsec:.0f}"><div id=tip></div><div class=wrap>',
         f"<h1>{t}</h1>",
         f'<p class="sub">generado {html.escape(generated)} · <span id=age></span></p>',
+        '<div class="legend"><span><span class="d good"></span><b>ok</b> — sin problemas</span>'
+        '<span><span class="d warn"></span><b>aviso</b> — algo que vigilar, no es un fallo</span>'
+        '<span><span class="d bad"></span><b>atención</b> — fallo o riesgo, requiere acción</span>'
+        "</div>",
     ]
     if ai_summary.strip():
         sections.append(f'<div class="ai">🧠 {md_lite(ai_summary)}</div>')
