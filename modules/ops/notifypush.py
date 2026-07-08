@@ -38,9 +38,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from core.metrics import MetricsStore
 from core.registry import register
 from core.secrets import get_secret
-from core.types import FailureRecord, ModuleResult, RunContext, SafetyMode
+from core.types import FailureRecord, ModuleResult, NotifyLevel, RunContext, SafetyMode
 from integrations import discord, telegram
 
 # (token, chat_id, text) -> delivered? Injected so tests never touch the network.
@@ -166,6 +167,25 @@ def _write_report(ctx: RunContext, digest: str, sent: bool, dry_run: bool, note:
     (out_dir / "summary.md").write_text(digest, encoding="utf-8")
 
 
+def _has_failures(ctx: RunContext) -> bool:
+    """True if any module's latest run failed (from the metrics store).
+
+    Used to honour ``notify.level=fail`` (send only on trouble). ``notifypush``
+    itself is ignored so a suppressed push never counts as its own failure. If the
+    store is missing/unreadable we fail OPEN (return True) — better a spurious
+    digest than silently swallowing a real problem.
+    """
+    db = ctx.config.reporting.dir / "cache" / "metrics.db"
+    if not db.is_file():
+        return True
+    try:
+        with MetricsStore(db) as store:
+            status = store.latest_status()
+    except Exception:  # pragma: no cover - defensive; fail open
+        return True
+    return any(not s.get("ok") for s in status if str(s.get("module")) != "notifypush")
+
+
 @register("notifypush")
 def run(
     ctx: RunContext,
@@ -193,10 +213,15 @@ def run(
     sent = False
     discord_sent = False
     note = ""
+    level = ctx.config.notify.level
     if dry_run:
         note = "DRY-RUN: digest compuesto pero NO enviado (usa modo live para enviar)."
     elif not ctx.config.notify.enabled:
         note = "notify.enabled=false — no se envía; activa notify para el push."
+    elif level is NotifyLevel.NONE:
+        note = "notify.level=none — envío desactivado."
+    elif level is NotifyLevel.FAIL and not _has_failures(ctx):
+        note = "notify.level=fail y no hay módulos en fallo — no se envía (sin ruido)."
     else:
         token = get_secret(ctx.config.notify.token_ref, required=False)
         chat_id = get_secret(ctx.config.notify.chat_id_ref, required=False)

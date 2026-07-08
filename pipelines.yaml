@@ -27,6 +27,27 @@ pipelines:
     - backupaudit
     - netdoctor
 
+  # Hourly cron: refresh EVERY health card the panel shows, prune the metrics
+  # store (growth control), regenerate the dashboard, then push to Telegram ONLY
+  # if something is failing (notify.level=fail suppresses the no-news case). Run
+  # with IZUMI_MODE=live so the prune + the conditional push actually happen.
+  # diskwatch is intentionally NOT here — it needs a privileged container; this
+  # pipeline only needs the docker socket.
+  hourly:
+    - uptime
+    - dbcheck
+    - permsdoctor
+    - backupaudit
+    - netdoctor
+    - configcheck
+    - capacitydoctor
+    - certdoctor
+    - status
+    - retention
+    - metricsexport
+    - webdashboard
+    - notifypush
+
   # Nightly cron: run the read-only sweep, then push the consolidated digest to
   # Telegram. Run with IZUMI_MODE=live (+ notify.enabled) so notifypush sends:
   #   docker run --rm -e IZUMI_MODE=live -v /var/run/docker.sock:/var/run/docker.sock \

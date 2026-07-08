@@ -7,7 +7,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from core.types import RunContext, SafetyMode
+from core.metrics import MetricsStore
+from core.types import NotifyLevel, RunContext, SafetyMode
 from modules.ops import notifypush
 from tests.fakes import make_context
 
@@ -16,6 +17,19 @@ def _write_summary(tmp_path: Path, subdir: str, text: str) -> None:
     d = tmp_path / "reports" / subdir
     d.mkdir(parents=True, exist_ok=True)
     (d / "summary.md").write_text(text, encoding="utf-8")
+
+
+def _seed_status(tmp_path: Path, module: str, *, ok: bool) -> None:
+    """Record one module's latest run into the metrics store (drives notify.level=fail)."""
+    db = tmp_path / "reports" / "cache" / "metrics.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    with MetricsStore(db) as store:
+        store.record("r1", module, {"actions": 0.0}, ok=ok, failures=0 if ok else 1)
+
+
+def _notify(ctx: RunContext, *, level: NotifyLevel) -> RunContext:
+    cfg = replace(ctx.config, notify=replace(ctx.config.notify, enabled=True, level=level))
+    return replace(ctx, config=cfg)
 
 
 def _read_plan(tmp_path: Path) -> dict[str, object]:
@@ -183,6 +197,59 @@ def test_live_also_sends_to_discord_when_configured(
     )
     assert result.metrics["discord_sent"] == 1.0
     assert posted and posted[0][0] == "https://hook"
+
+
+def _with_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IZUMI_TELEGRAM_BOT_TOKEN", "T0KEN")
+    monkeypatch.setenv("IZUMI_TELEGRAM_CHAT_ID", "12345")
+    import core.secrets as secrets
+
+    secrets.reset_cache()
+
+
+def test_level_fail_suppresses_when_nothing_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_summary(tmp_path, "uptime", "ok")
+    _seed_status(tmp_path, "uptime", ok=True)  # everything healthy
+    _with_secrets(monkeypatch)
+    calls: list[str] = []
+
+    ctx = _notify(make_context(tmp_path, mode=SafetyMode.LIVE), level=NotifyLevel.FAIL)
+    result = notifypush.run(ctx, sender=lambda t, c, x: calls.append(x) or True)
+
+    assert calls == []  # no news → no Telegram
+    assert result.metrics["sent"] == 0.0
+    assert "sin ruido" in str(_read_plan(tmp_path)["note"])
+
+
+def test_level_fail_sends_when_a_module_is_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_summary(tmp_path, "dbcheck", "1 corrupta")
+    _seed_status(tmp_path, "dbcheck", ok=False)  # a real failure
+    _with_secrets(monkeypatch)
+    calls: list[str] = []
+
+    ctx = _notify(make_context(tmp_path, mode=SafetyMode.LIVE), level=NotifyLevel.FAIL)
+    result = notifypush.run(ctx, sender=lambda t, c, x: calls.append(x) or True)
+
+    assert len(calls) == 1  # failure present → pushed
+    assert result.metrics["sent"] == 1.0
+
+
+def test_level_none_never_sends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_summary(tmp_path, "dbcheck", "1 corrupta")
+    _seed_status(tmp_path, "dbcheck", ok=False)  # even with a failure present
+    _with_secrets(monkeypatch)
+    calls: list[str] = []
+
+    ctx = _notify(make_context(tmp_path, mode=SafetyMode.LIVE), level=NotifyLevel.NONE)
+    result = notifypush.run(ctx, sender=lambda t, c, x: calls.append(x) or True)
+
+    assert calls == []
+    assert result.metrics["sent"] == 0.0
+    assert "notify.level=none" in str(_read_plan(tmp_path)["note"])
 
 
 def test_live_send_failure_is_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
