@@ -36,6 +36,27 @@ def test_render_includes_colour_legend() -> None:
     assert "aviso" in out and "atención" in out
 
 
+def test_action_catalog_matches_webui_allowlist() -> None:
+    # Every launch button must be authorised server-side, with acting/read-only coherent.
+    import webui
+
+    for _group, items in webdashboard._ACTION_GROUPS:
+        for act, _label, acting in items:
+            assert act in webui._ALLOWED_ACTIONS, f"{act} not allowed by webui"
+            if acting:
+                assert act in webui._ACTING_ACTIONS, f"{act} must be an acting action"
+            else:
+                assert act in webui._READONLY_ACTIONS, f"{act} must be read-only"
+
+
+def test_actions_panel_marks_acting_modules() -> None:
+    html_out = webdashboard._actions_panel()
+    assert 'data-act="health" data-dry="0"' in html_out  # read-only → single launch
+    # organizer acts → both a simulate and a confirmed live button.
+    assert 'data-act="organizer" data-dry="1"' in html_out
+    assert 'data-act="organizer" data-dry="0" data-confirm="1"' in html_out
+
+
 def test_web_ui_has_no_native_dialogs() -> None:
     # The panel must use the custom toast/modal, not blocking alert()/confirm()/prompt().
     js = webdashboard._JS

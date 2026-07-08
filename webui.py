@@ -35,10 +35,14 @@ from functools import partial
 from io import BytesIO
 
 _API_TOKEN_ENV = "IZUMI_WEB_TOKEN"  # noqa: S105 - env var NAME, not a secret value
-# Only these READ-ONLY actions may be triggered from the web (no apply/dbrepair here).
-_ALLOWED_ACTIONS = frozenset(
+# READ-ONLY / proposal-only modules + pipelines — safe to run LIVE from the web.
+_READONLY_ACTIONS = frozenset(
     {
+        # pipelines (read-only sweeps; nightly/hourly also push a Telegram digest)
         "health",
+        "hourly",
+        "nightly",
+        # health & doctors
         "uptime",
         "dbcheck",
         "diskwatch",
@@ -48,14 +52,40 @@ _ALLOWED_ACTIONS = frozenset(
         "certdoctor",
         "capacitydoctor",
         "status",
+        # config / AI / reporting (read-only or proposal-only)
         "configcheck",
         "shadowcheck",
         "logwatch",
         "analyst",
+        "autoheal",
+        "autopilot",
+        "notifypush",
         "metricsexport",
+        "retention",
         "webdashboard",
+        # inventory (read-only snapshots)
+        "disk_inventory",
+        "docker_inventory",
+        "network_inventory",
+        "share_inventory",
+        "media_integrity",
     }
 )
+# Modules that ACT (move/delete/repair). From the web they run in DRY_RUN by default;
+# a LIVE run is allowed only when the client explicitly asks (dry_run=false) after a
+# confirm dialog. The apply allow-list (/api/apply) remains the boundary for commands.
+_ACTING_ACTIONS = frozenset(
+    {
+        "organizer",
+        "extractor",
+        "plex_dupefinder",
+        "dbrepair",
+        "plexrefresh",
+        "arr_orphans",
+        "downloads_watchdog",
+    }
+)
+_ALLOWED_ACTIONS = _READONLY_ACTIONS | _ACTING_ACTIONS
 
 
 def check_request(action: str, token: str, *, expected_token: str) -> tuple[bool, int, str]:
@@ -179,20 +209,31 @@ def humanize_action_result(action: str, rc: int, reports_dir: str) -> str:
     return f"{action}: terminó con incidencias — abre el informe en el panel para el detalle"
 
 
-def _run_platform_action(action: str) -> tuple[bool, str]:  # pragma: no cover - needs the platform
-    """Run a whitelisted read-only module/pipeline in-process (container only)."""
+def _run_platform_action(
+    action: str, *, dry_run: bool = False
+) -> tuple[bool, str]:  # pragma: no cover - needs the platform
+    """Run a whitelisted module/pipeline in-process (container only).
+
+    ``dry_run`` forces DRY_RUN mode so an acting module (organizer/extractor/…) only
+    SIMULATES from the web; a live run happens only when the caller passes
+    ``dry_run=False`` (after the confirm dialog). Read-only modules ignore the mode.
+    """
     from core import config as config_mod
     from core import registry
+    from core.types import SafetyMode
     from run import _run_module, _run_pipeline, build_context
 
     cfg = config_mod.load()
+    if dry_run:
+        cfg = config_mod.with_mode(cfg, SafetyMode.DRY_RUN)
     registry.discover()
     ctx = build_context(cfg)
     if action in cfg.pipelines:
         rc = _run_pipeline(ctx, action, cfg.pipelines[action])
     else:
         rc = _run_module(ctx, action)
-    return rc == 0, humanize_action_result(action, rc, str(cfg.reporting.dir))
+    prefix = "(simulación) " if dry_run else ""
+    return rc == 0, prefix + humanize_action_result(action, rc, str(cfg.reporting.dir))
 
 
 def _ask_assistant(question: str) -> tuple[bool, str]:  # pragma: no cover - needs the platform
@@ -302,7 +343,10 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 action = str(data.get("action", ""))
                 ok, code, msg = check_request(action, token, expected_token=expected)
                 if ok:
-                    ok, detail = _run_platform_action(action)
+                    # Acting modules default to DRY_RUN unless the client explicitly
+                    # asked for a live run (dry_run=false, sent after the confirm dialog).
+                    dry_run = bool(data.get("dry_run", action in _ACTING_ACTIONS))
+                    ok, detail = _run_platform_action(action, dry_run=dry_run)
                     code, msg = (200 if ok else 500), detail
             elif path == "/api/ask":
                 ok, code, msg = check_token(token, expected_token=expected)

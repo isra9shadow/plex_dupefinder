@@ -78,8 +78,16 @@ def test_api_rejects_bad_token() -> None:
 
 
 def test_api_rejects_non_whitelisted_action() -> None:
-    ok, code, msg = webui.check_request("dbrepair", "secret", expected_token="secret")
-    assert not ok and code == 400 and "no permitida" in msg  # apply/destructive never allowed
+    ok, code, msg = webui.check_request("shutdown", "secret", expected_token="secret")
+    assert not ok and code == 400 and "no permitida" in msg  # unknown action never runs
+
+
+def test_api_allows_acting_modules() -> None:
+    # Acting modules are whitelisted (they run dry-run by default; live only when the
+    # client asks after confirming). The apply allow-list still gates raw commands.
+    for act in ("organizer", "extractor", "plex_dupefinder", "dbrepair", "plexrefresh"):
+        ok, code, _ = webui.check_request(act, "secret", expected_token="secret")
+        assert ok and code == 200, act
 
 
 def test_api_allows_readonly_action_with_token() -> None:

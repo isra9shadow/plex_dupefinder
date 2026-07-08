@@ -214,6 +214,22 @@ button:disabled{cursor:progress}
 .dlg button{padding:8px 14px;border:1px solid var(--ring);border-radius:8px;cursor:pointer;
   font:13px system-ui;background:var(--surface);color:var(--ink)}
 .dlg button.primary{background:var(--accent);color:#fff;border-color:transparent}
+/* acciones — lanzar módulos/pipelines desde el panel */
+details.actions{margin:0 0 10px;background:var(--surface);border:1px solid var(--ring);
+  border-radius:10px;padding:4px 14px}
+details.actions>summary{cursor:pointer;font-weight:600;padding:9px 0;list-style:none}
+details.actions>summary::-webkit-details-marker{display:none}
+details.actions>summary::before{content:"▸ "}
+details.actions[open]>summary::before{content:"▾ "}
+.actgrp h4{margin:8px 0 6px;font-size:12px;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.05em}
+.actg{display:inline-flex;align-items:center;gap:6px;margin:0 8px 8px 0;
+  padding:4px 6px 4px 10px;border:1px solid var(--ring);border-radius:8px;background:var(--plane)}
+.actl{font-size:13px;margin-right:2px}
+.abtn{padding:4px 9px;border:1px solid var(--ring);border-radius:6px;cursor:pointer;
+  background:var(--surface);color:var(--ink);font:12px system-ui}
+.abtn.go{background:var(--accent);color:#fff;border-color:transparent}
+.abtn:disabled{cursor:progress;opacity:.6}
 """
 
 _JS = r"""
@@ -260,15 +276,26 @@ if(q){q.addEventListener('input',()=>{const v=q.value.toLowerCase();
     c.style.display=c.dataset.name.includes(v)?'':'none';});});}
 // --- ejecutar módulo/pipeline ---
 document.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',async()=>{
+  const act=b.dataset.act, dry=b.dataset.dry==='1';
+  if(b.dataset.confirm==='1'){
+    const okc=await modal((d,fin)=>{
+      d.innerHTML='<h4>Ejecutar en vivo: '+act+'</h4><p>Este módulo ACTÚA (mueve o cambia '
+        +'cosas) y se ejecutará en modo live. ¿Continuar?</p>'
+        +'<div class="row"><button class="cancel">Cancelar</button>'
+        +'<button class="primary go">Ejecutar</button></div>';
+      d.querySelector('.cancel').onclick=()=>fin(false);
+      d.querySelector('.go').onclick=()=>fin(true);});
+    if(!okc)return;
+  }
   const t=await askToken(); if(!t)return;
-  const o=b.innerHTML; b.disabled=true; b.innerHTML=SP+'ejecutando…';
+  const o=b.innerHTML; b.disabled=true; b.innerHTML=SP+(dry?'simulando…':'ejecutando…');
   try{const r=await fetch('/api/run',{method:'POST',
       headers:{'content-type':'application/json'},
-      body:JSON.stringify({action:b.dataset.act,token:t})});
+      body:JSON.stringify({action:act,token:t,dry_run:dry})});
     const j=await r.json();
     if(!j.ok && /token/.test(j.message||'')) localStorage.removeItem('izumi_tok');
     b.innerHTML=o; b.disabled=false;
-    if(j.ok){toast(j.message||'hecho','ok');setTimeout(()=>location.reload(),800);}
+    if(j.ok){toast(j.message||'hecho','ok');setTimeout(()=>location.reload(),1000);}
     else{toast(j.message||'error','err');}
   }catch(e){b.innerHTML=o; b.disabled=false; toast('error de red','err');}
 }));
@@ -640,6 +667,94 @@ _FAVICON = (
 )
 
 
+# Launchable actions grouped like the SSH menu. The 3rd field marks a module that
+# ACTS (moves/deletes/repairs): from the web it gets a "simular" (dry-run) button and
+# an "ejecutar" (live, confirmed) one. Read-only entries get a single "lanzar" button.
+# Keep the action ids in sync with webui.py's _READONLY_ACTIONS / _ACTING_ACTIONS.
+_ACTION_GROUPS: tuple[tuple[str, tuple[tuple[str, str, bool], ...]], ...] = (
+    (
+        "Salud & pipelines",
+        (
+            ("health", "Chequeo de salud", False),
+            ("hourly", "Refresco horario", False),
+            ("nightly", "Barrido + aviso Telegram", False),
+            ("uptime", "Servicios", False),
+            ("status", "Estado del sistema", False),
+        ),
+    ),
+    (
+        "Doctores",
+        (
+            ("dbcheck", "Integridad DB", False),
+            ("permsdoctor", "Permisos", False),
+            ("netdoctor", "Red / DNS", False),
+            ("certdoctor", "Certificados", False),
+            ("capacitydoctor", "Capacidad disco", False),
+            ("backupaudit", "Backups", False),
+            ("diskwatch", "Discos SMART", False),
+        ),
+    ),
+    (
+        "IA & config",
+        (
+            ("analyst", "Analista IA", False),
+            ("logwatch", "Logs IA", False),
+            ("autoheal", "Autoheal (propone)", False),
+            ("configcheck", "Config-doctor", False),
+            ("notifypush", "Enviar informe Telegram", False),
+            ("metricsexport", "Métricas Prometheus", False),
+            ("retention", "Retención / limpieza", False),
+        ),
+    ),
+    (
+        "Inventario",
+        (
+            ("disk_inventory", "Discos", False),
+            ("docker_inventory", "Contenedores", False),
+            ("network_inventory", "Red", False),
+            ("share_inventory", "Shares", False),
+        ),
+    ),
+    (
+        "Media — ACTÚAN",
+        (
+            ("organizer", "Organizar", True),
+            ("extractor", "Descomprimir", True),
+            ("plex_dupefinder", "Quitar duplicados", True),
+            ("plexrefresh", "Refrescar Plex", True),
+        ),
+    ),
+)
+
+
+def _actions_panel() -> str:
+    """A collapsed 'Acciones' section with grouped launch buttons (read-only + acting)."""
+    groups: list[str] = []
+    for name, items in _ACTION_GROUPS:
+        btns: list[str] = []
+        for act, label, acting in items:
+            a, lb = html.escape(act), html.escape(label)
+            if acting:
+                btns.append(
+                    f'<span class="actg"><span class="actl">{lb}</span>'
+                    f'<button class="abtn" data-act="{a}" data-dry="1">▷ simular</button>'
+                    f'<button class="abtn go" data-act="{a}" data-dry="0" data-confirm="1">'
+                    "▶ ejecutar</button></span>"
+                )
+            else:
+                btns.append(
+                    f'<span class="actg"><span class="actl">{lb}</span>'
+                    f'<button class="abtn" data-act="{a}" data-dry="0">▶ lanzar</button></span>'
+                )
+        groups.append(f'<div class="actgrp"><h4>{html.escape(name)}</h4>{"".join(btns)}</div>')
+    return (
+        '<details class="actions"><summary>⚙️ Acciones — lanzar módulos</summary>'
+        '<p class="sub">Los de solo lectura se ejecutan en vivo. Los de «Media» ACTÚAN: '
+        "«simular» no cambia nada; «ejecutar» pide confirmación y actúa en vivo.</p>"
+        f'{"".join(groups)}</details>'
+    )
+
+
 def render_html(
     status: list[dict[str, object]],
     sparks: dict[str, tuple[str, list[float]]],
@@ -685,6 +800,7 @@ def render_html(
         '<a class="btn" href="/api/export">⬇ Exportar</a></div>'
         '<div id=ans class="ai" style="display:none"></div>'
     )
+    sections.append(_actions_panel())
     if status:
         sections.append(_kpis(status))
         sections.append(f'<h2>Estado</h2><div class="tiles">{_status_tiles(status, sparks)}</div>')
