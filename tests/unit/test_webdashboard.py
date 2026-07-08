@@ -40,7 +40,9 @@ def test_render_has_kpis_ai_filter_and_severity() -> None:
 
 def test_render_bad_card_has_ai_fix_button() -> None:
     status = [{"module": "dbcheck", "ok": False, "failures": 1, "ts": "t"}]
-    out = webdashboard.render_html(status, {}, [("dbcheck", "# Dbcheck\n- 1 corrupta")], generated="n")
+    out = webdashboard.render_html(
+        status, {}, [("dbcheck", "# Dbcheck\n- 1 corrupta")], generated="n"
+    )
     assert 'class="fixai" data-mod="dbcheck"' in out  # per-card AI fix button
     assert 'id="ai-dbcheck"' in out  # inline answer target
     assert "function fixcmd(" in out and "applyCmd(cmd,ab)" in out  # one-click apply of the fix

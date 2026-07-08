@@ -23,6 +23,7 @@ else:  # pragma: no cover - exercised only on the 3.9 host launcher
     class StrEnum(str, Enum):
         __str__ = str.__str__
 
+
 if TYPE_CHECKING:
     from core.config import Config
     from core.fs import Fs
