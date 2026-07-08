@@ -144,6 +144,41 @@ def export_markdown(directory: str) -> str:
     return "\n".join(parts) + "\n"
 
 
+def humanize_action_result(action: str, rc: int, reports_dir: str) -> str:
+    """Turn a module's exit code into a message a person can read (pure-ish).
+
+    Prefers the module's own ``plan.json`` (configcheck-style: total/missing/
+    invalid counts + per-setting keys) so the alert says WHAT is wrong, not just
+    ``rc=1``. Falls back to a plain ok/incidencias message for modules without one.
+    """
+    from pathlib import Path
+
+    plan = Path(reports_dir) / action / "plan.json"
+    if plan.is_file():
+        try:
+            data = json.loads(plan.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        if isinstance(data, dict) and "missing_count" in data:
+            missing = int(data.get("missing_count") or 0)
+            invalid = int(data.get("invalid_count") or 0)
+            total = int(data.get("total") or 0)
+            if missing == 0 and invalid == 0:
+                return f"{action}: todo correcto — {total} ajustes revisados ✅"
+            settings = data.get("settings") if isinstance(data.get("settings"), list) else []
+            miss = [str(s.get("key")) for s in settings if s.get("status") == "missing"]
+            inv = [str(s.get("key")) for s in settings if s.get("status") == "invalid"]
+            parts = []
+            if miss:
+                parts.append(f"faltan {missing}: " + ", ".join(miss))
+            if inv:
+                parts.append(f"inválidos {invalid}: " + ", ".join(inv))
+            return f"{action}: " + "; ".join(parts)
+    if rc == 0:
+        return f"{action}: completado correctamente ✅"
+    return f"{action}: terminó con incidencias — abre el informe en el panel para el detalle"
+
+
 def _run_platform_action(action: str) -> tuple[bool, str]:  # pragma: no cover - needs the platform
     """Run a whitelisted read-only module/pipeline in-process (container only)."""
     from core import config as config_mod
@@ -157,7 +192,7 @@ def _run_platform_action(action: str) -> tuple[bool, str]:  # pragma: no cover -
         rc = _run_pipeline(ctx, action, cfg.pipelines[action])
     else:
         rc = _run_module(ctx, action)
-    return rc == 0, f"{action} rc={rc}"
+    return rc == 0, humanize_action_result(action, rc, str(cfg.reporting.dir))
 
 
 def _ask_assistant(question: str) -> tuple[bool, str]:  # pragma: no cover - needs the platform
@@ -280,7 +315,7 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
                     ok, detail = _apply_command(str(data.get("command", "")))
                     code, msg = (200 if ok else 400), detail
         except Exception as exc:  # never crash the server on a handler error
-            ok, code, msg = False, 500, f"error: {exc}"
+            ok, code, msg = False, 500, f"No se pudo completar la acción: {exc}"
         self._json(code, {"ok": ok and code == 200, "message": msg})
 
 

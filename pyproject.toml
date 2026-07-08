@@ -29,9 +29,10 @@ ignore = []
 "core/logging.py" = ["UP017"]
 "core/metrics.py" = ["UP017"]
 "aictx/providers/history.py" = ["UP017"]
-# configspec is imported by menu.py on the Unraid HOST (Python 3.9); the StrEnum
-# 3.11-fallback block must stay, so ignore the "modernise" lints that would strip it.
+# configspec/types are imported on the Unraid HOST (Python 3.9) via menu.py/webui.py;
+# the StrEnum 3.11-fallback block must stay, so ignore the "modernise" lints that would strip it.
 "core/configspec.py" = ["UP036", "UP042"]
+"core/types.py" = ["UP036", "UP042"]
 # adapters/command.py is THE single audited subprocess boundary (list args, no
 # shell, read-only callers). Bandit's subprocess warnings are expected here only.
 "adapters/command.py" = ["S603", "S607"]

@@ -2,7 +2,51 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import webui
+
+
+def _write_plan(reports: Path, action: str, payload: dict) -> None:
+    d = reports / action
+    d.mkdir(parents=True)
+    (d / "plan.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_humanize_reads_plan_all_ok(tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        "configcheck",
+        {"total": 30, "missing_count": 0, "invalid_count": 0, "settings": []},
+    )
+    msg = webui.humanize_action_result("configcheck", 0, str(tmp_path))
+    assert "todo correcto" in msg and "30" in msg
+
+
+def test_humanize_lists_missing_and_invalid_keys(tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        "configcheck",
+        {
+            "total": 3,
+            "missing_count": 2,
+            "invalid_count": 1,
+            "settings": [
+                {"key": "PLEX_TOKEN", "status": "missing"},
+                {"key": "RADARR_API_KEY", "status": "missing"},
+                {"key": "radarr.url", "status": "invalid"},
+            ],
+        },
+    )
+    msg = webui.humanize_action_result("configcheck", 1, str(tmp_path))
+    assert "PLEX_TOKEN" in msg and "RADARR_API_KEY" in msg and "radarr.url" in msg
+    assert "rc=" not in msg  # never leak the raw exit code to a human
+
+
+def test_humanize_fallback_without_plan(tmp_path: Path) -> None:
+    assert "completado" in webui.humanize_action_result("uptime", 0, str(tmp_path))
+    assert "incidencias" in webui.humanize_action_result("uptime", 1, str(tmp_path))
 
 
 def test_parse_defaults() -> None:

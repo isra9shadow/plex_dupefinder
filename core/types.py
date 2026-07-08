@@ -8,9 +8,20 @@ runtime, so importing this module never pulls in config/fs/etc.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import TYPE_CHECKING
+
+# The Unraid HOST launchers (menu.py/webui.py) run on Python 3.9, where StrEnum
+# (3.11+) does not exist. Fall back to a str+Enum with StrEnum's __str__ so this
+# module imports cleanly on the host; the containerised modules use real StrEnum.
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:  # pragma: no cover - exercised only on the 3.9 host launcher
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        __str__ = str.__str__
 
 if TYPE_CHECKING:
     from core.config import Config
