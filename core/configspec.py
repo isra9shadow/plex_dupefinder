@@ -194,10 +194,22 @@ def _validate(
             return False, "expected an integer, got a boolean"
         if isinstance(value, int):
             return True, ""
+        # An integer-valued float counts as an integer. core/config mirrors every
+        # numeric config value as a float (via _num), so a config.json ``15`` reaches
+        # us as ``15.0`` / ``"15.0"`` — accept it; reject only genuine fractions.
+        if isinstance(value, float):
+            ok = value.is_integer()
+            return ok, "" if ok else f"not an integer: {value}"
+        text = _to_text(value).strip()
         try:
-            int(_to_text(value).strip())
+            int(text)
         except ValueError:
-            return False, f"not an integer: {_to_text(value)!r}"
+            try:
+                if float(text).is_integer():
+                    return True, ""
+            except ValueError:
+                pass
+            return False, f"not an integer: {text!r}"
         return True, ""
     if kind is Validator.URL:
         ok = _looks_like_url(_to_text(value))

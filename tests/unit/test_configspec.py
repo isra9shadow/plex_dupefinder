@@ -67,6 +67,20 @@ def test_int_validator_accepts_int_and_numeric_string() -> None:
     assert configspec.evaluate_setting(spec, {}, {"a": {"n": "7"}}).status is Status.OK
 
 
+def test_int_validator_accepts_integer_valued_floats() -> None:
+    # core/config mirrors numeric config as floats, so 15 arrives as 15.0 / "15.0".
+    spec = _spec(key="n", location="a.n", validator=Validator.INT)
+    assert configspec.evaluate_setting(spec, {}, {"a": {"n": 15.0}}).status is Status.OK
+    assert configspec.evaluate_setting(spec, {}, {"a": {"n": "15.0"}}).status is Status.OK
+
+
+def test_int_validator_rejects_fractional_floats() -> None:
+    spec = _spec(key="n", location="a.n", validator=Validator.INT)
+    bad = configspec.evaluate_setting(spec, {}, {"a": {"n": 15.5}})
+    assert bad.status is Status.INVALID
+    assert "not an integer" in bad.detail
+
+
 def test_int_validator_rejects_bool_and_text() -> None:
     spec = _spec(key="n", location="a.n", validator=Validator.INT)
     bad_bool = configspec.evaluate_setting(spec, {}, {"a": {"n": True}})
