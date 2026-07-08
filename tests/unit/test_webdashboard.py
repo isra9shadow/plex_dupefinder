@@ -9,6 +9,19 @@ from modules.ops import webdashboard
 from tests.fakes import make_context
 
 
+def test_exec_prompt_is_actionable_and_spanish_only() -> None:
+    prompt = webdashboard.build_exec_prompt(
+        [("configcheck", "OK: 30 MISSING: 0"), ("backupaudit", "radarr stale 6d")]
+    )
+    # Actionable structure: an action + validation step per problem.
+    assert "Acción:" in prompt and "Validar:" in prompt
+    # Strict Spanish (the local model has code-switched to Chinese/English).
+    assert "SOLO en español" in prompt
+    # All-clear escape hatch and the real report content are both included.
+    assert "Todo correcto" in prompt
+    assert "### configcheck" in prompt and "### backupaudit" in prompt
+
+
 def test_sparkline_flat_and_series() -> None:
     assert "<line" in webdashboard.sparkline_svg([5.0])
     assert "<polyline" in webdashboard.sparkline_svg([1.0, 2.0, 3.0])

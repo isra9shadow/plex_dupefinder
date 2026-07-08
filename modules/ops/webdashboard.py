@@ -653,16 +653,38 @@ def _collect_cards(reports: Path) -> list[tuple[str, str]]:
 
 
 def build_exec_prompt(cards: list[tuple[str, str]]) -> str:
-    """Prompt for a 2-3 sentence Spanish executive summary of the homelab state."""
+    """Prompt for a CLEAR, actionable Spanish breakdown of the homelab's problems.
+
+    Asks for a plain-text bullet list (one problem per line, most severe first) with a
+    concrete action AND a validation step each — usable directly or pasted into another
+    AI to resolve/verify. The format is constrained to what ``md_lite`` renders cleanly
+    (``- `` bullets, no inline ``**``/backticks) and to strict Spanish, because the small
+    local model tends to code-switch (it has leaked Chinese/English into the summary).
+    """
     parts = [
-        "Resume en 2-3 frases, en español claro y directo, el estado GENERAL del "
-        "homelab a partir de estos informes. Destaca solo lo importante (fallos, "
-        "riesgos) y si todo está bien, dilo. No inventes nada fuera de los informes.",
+        "Eres el copiloto de operaciones de un homelab. A partir de los INFORMES de "
+        "abajo, escribe un diagnóstico ACCIONABLE (no un resumen vago).",
         "",
+        "Responde EXACTAMENTE con este formato:",
+        "Estado general: <una sola frase>.",
+        "",
+        "Problemas (del más grave al menos, máximo 8):",
+        "- <qué pasa y por qué importa> [módulo]. Acción: <paso o comando concreto>. "
+        "Validar: <cómo comprobar que quedó resuelto>.",
+        "",
+        "REGLAS ESTRICTAS:",
+        "- Responde SOLO en español. Ni una palabra en inglés, chino u otro idioma; "
+        "usa únicamente caracteres latinos.",
+        "- Texto plano: NO uses negrita (**), NI comillas invertidas (`), NI tablas.",
+        "- Una línea que empiece por '- ' por cada problema. Entre corchetes, el módulo.",
+        "- Usa SOLO datos de los informes; no inventes. Si no hay ningún problema, "
+        "responde únicamente: Todo correcto.",
+        "",
+        "INFORMES:",
     ]
     for module, summary in cards:
         parts.append(f"### {module}\n{summary.strip()[:600]}")
-    parts.append("\nRESUMEN:")
+    parts.append("\nDIAGNÓSTICO:")
     return "\n".join(parts)
 
 
