@@ -66,6 +66,23 @@ def test_live_creates_tag_and_adds_it_in_bulk(tmp_path: Path) -> None:
     assert result.actions == 2 and result.metrics["to_add"] == 2.0
 
 
+def test_chunks_splits_evenly() -> None:
+    assert tagger._chunks([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
+    assert tagger._chunks([], 2) == []
+
+
+def test_live_batches_large_add_to_avoid_timeout(tmp_path: Path) -> None:
+    movies = [{"id": i, "collection": {"tmdbId": i}} for i in range(450)]
+    calls: list[tuple] = []
+    ctx = make_context(tmp_path, mode=SafetyMode.LIVE)
+    result = tagger.run(ctx, client=_client(movies, [], calls))
+
+    puts = [p for m, _u, p in calls if m == "PUT"]
+    assert len(puts) == 3  # 450 movies / 200 per batch → 3 calls
+    assert sum(len(p["movieIds"]) for p in puts) == 450
+    assert result.actions == 450 and result.metrics["to_add"] == 450.0
+
+
 def test_live_removes_managed_tag_when_no_longer_matches(tmp_path: Path) -> None:
     # Movie has izumi:saga but is no longer in a collection → tag must be removed.
     tags = [{"id": 99, "label": "izumi:saga"}]

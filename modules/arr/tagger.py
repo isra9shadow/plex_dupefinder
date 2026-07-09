@@ -38,6 +38,11 @@ from integrations.radarr import RadarrClient
 from modules.arr.tag_rules import DEFAULT_RULES, desired_tags
 
 _DEFAULT_PREFIX = "izumi:"
+_BATCH = 200  # movies per PUT /movie/editor call (avoid timeouts on big libraries)
+
+
+def _chunks(items: list[int], size: int) -> list[list[int]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 @dataclass(frozen=True)
@@ -110,7 +115,9 @@ def _plan_changes(
     return _Plan(evaluated=evaluated, add=dict(add), remove=dict(remove))
 
 
-def _write_report(ctx: RunContext, plan: _Plan, *, dry_run: bool, applied: int) -> None:
+def _write_report(
+    ctx: RunContext, plan: _Plan, *, dry_run: bool, applied: int, apply_error: str = ""
+) -> None:
     out_dir = ctx.config.reporting.dir / "radarr_tagger"
     out_dir.mkdir(parents=True, exist_ok=True)
     add_counts = {lbl: len(ids) for lbl, ids in sorted(plan.add.items())}
@@ -123,6 +130,7 @@ def _write_report(ctx: RunContext, plan: _Plan, *, dry_run: bool, applied: int) 
                 "to_add": add_counts,
                 "to_remove": rem_counts,
                 "applied": applied,
+                "apply_error": apply_error,
             },
             indent=2,
             sort_keys=True,
@@ -134,8 +142,12 @@ def _write_report(ctx: RunContext, plan: _Plan, *, dry_run: bool, applied: int) 
     lines = [
         "# Radarr tagger",
         "",
-        f"Modo: {mode_label} · películas evaluadas: {plan.evaluated}",
+        f"Modo: {mode_label} · películas evaluadas: {plan.evaluated} · aplicados: {applied}",
         "",
+    ]
+    if apply_error:
+        lines += [f"> ERROR al aplicar (tras {applied}): {apply_error}", ""]
+    lines += [
         f"## A AÑADIR ({sum(add_counts.values())})",
         *([f"- {lbl}: {n}" for lbl, n in add_counts.items()] or ["(ninguno)"]),
         "",
@@ -195,6 +207,7 @@ def run(ctx: RunContext, *, client: RadarrClient | None = None) -> ModuleResult:
     plan = _plan_changes(movies, id_to_label, settings)
 
     applied = 0
+    apply_error = ""
     if not dry_run:
         try:
             for lbl, ids in plan.add.items():
@@ -204,17 +217,21 @@ def run(ctx: RunContext, *, client: RadarrClient | None = None) -> ModuleResult:
                     if tid is None:
                         continue
                     label_to_id[lbl] = tid
-                rc.edit_movie_tags(ids, tid, add=True)
-                applied += len(ids)
+                for chunk in _chunks(ids, _BATCH):  # batch so a big library never times out
+                    rc.edit_movie_tags(chunk, tid, add=True)
+                    applied += len(chunk)
             for lbl, ids in plan.remove.items():
                 tid = label_to_id.get(lbl)
                 if tid is not None:
-                    rc.edit_movie_tags(ids, tid, add=False)
-                    applied += len(ids)
+                    for chunk in _chunks(ids, _BATCH):
+                        rc.edit_movie_tags(chunk, tid, add=False)
+                        applied += len(chunk)
         except IntegrationError as exc:
-            result.add_failure(FailureRecord(category="integration", message=str(exc)))
+            apply_error = str(exc)
+            result.add_failure(FailureRecord(category="integration", message=apply_error))
+            ctx.logger.warning("radarr_tagger apply failed", error=apply_error, applied=applied)
 
-    _write_report(ctx, plan, dry_run=dry_run, applied=applied)
+    _write_report(ctx, plan, dry_run=dry_run, applied=applied, apply_error=apply_error)
     to_add = sum(len(v) for v in plan.add.values())
     to_remove = sum(len(v) for v in plan.remove.values())
     ctx.logger.info(
