@@ -48,6 +48,12 @@ pipelines:
     - webdashboard
     - notifypush
 
+  # Library enrichment (writes izumi-managed tags to Radarr so its native filters
+  # can use them, e.g. izumi:saga). Safe to dry-run; run with IZUMI_MODE=live to
+  # actually write. Weekly/on-demand — the library changes slowly.
+  library:
+    - radarr_tagger
+
   # Nightly cron: run the read-only sweep, then push the consolidated digest to
   # Telegram. Run with IZUMI_MODE=live (+ notify.enabled) so notifypush sends:
   #   docker run --rm -e IZUMI_MODE=live -v /var/run/docker.sock:/var/run/docker.sock \

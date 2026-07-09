@@ -87,6 +87,8 @@ _ACTING_ACTIONS = frozenset(
         "plexrefresh",
         "arr_orphans",
         "downloads_watchdog",
+        "radarr_tagger",
+        "library",
     }
 )
 _ALLOWED_ACTIONS = _READONLY_ACTIONS | _ACTING_ACTIONS
