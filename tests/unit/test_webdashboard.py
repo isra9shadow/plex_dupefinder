@@ -41,7 +41,7 @@ def test_action_catalog_matches_webui_allowlist() -> None:
     import webui
 
     for _group, items in webdashboard._ACTION_GROUPS:
-        for act, _label, acting in items:
+        for act, _label, acting, _icon in items:
             assert act in webui._ALLOWED_ACTIONS, f"{act} not allowed by webui"
             if acting:
                 assert act in webui._ACTING_ACTIONS, f"{act} must be an acting action"
@@ -52,6 +52,7 @@ def test_action_catalog_matches_webui_allowlist() -> None:
 def test_actions_panel_marks_acting_modules() -> None:
     html_out = webdashboard._actions_panel()
     assert 'data-act="health" data-dry="0"' in html_out  # read-only → single launch
+    assert 'class="ico"' in html_out  # each action carries a graphic icon
     # organizer acts → both a simulate and a confirmed live button.
     assert 'data-act="organizer" data-dry="1"' in html_out
     assert 'data-act="organizer" data-dry="0" data-confirm="1"' in html_out
@@ -244,9 +245,10 @@ def test_run_ai_failure_is_graceful(tmp_path: Path) -> None:
 
     ctx = make_context(tmp_path)
     result = webdashboard.run(ctx, llm=boom, now="2026-07-07")
-    # No AI summary, but the page + cards still render.
+    # No AI summary block, but the page + cards still render. (Check the summary div
+    # specifically — the 🧠 glyph is also used as an action icon in the launch panel.)
     page = (reports / "index.html").read_text(encoding="utf-8")
-    assert "🧠" not in page
+    assert '<div class="ai">🧠' not in page
     assert result.ok and result.metrics["cards"] == 1.0
 
 

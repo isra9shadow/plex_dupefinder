@@ -221,13 +221,16 @@ details.actions>summary{cursor:pointer;font-weight:600;padding:9px 0;list-style:
 details.actions>summary::-webkit-details-marker{display:none}
 details.actions>summary::before{content:"▸ "}
 details.actions[open]>summary::before{content:"▾ "}
-.actgrp h4{margin:8px 0 6px;font-size:12px;color:var(--muted);text-transform:uppercase;
+.actsec{margin:6px 0 12px}
+.actsec h4{margin:12px 0 8px;font-size:12px;color:var(--muted);text-transform:uppercase;
   letter-spacing:.05em}
-.actg{display:inline-flex;align-items:center;gap:6px;margin:0 8px 8px 0;
-  padding:4px 6px 4px 10px;border:1px solid var(--ring);border-radius:8px;background:var(--plane)}
-.actl{font-size:13px;margin-right:2px}
-.abtn{padding:4px 9px;border:1px solid var(--ring);border-radius:6px;cursor:pointer;
-  background:var(--surface);color:var(--ink);font:12px system-ui}
+.actgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:8px}
+.actg{display:flex;align-items:center;gap:8px;padding:6px 7px 6px 10px;
+  border:1px solid var(--ring);border-radius:9px;background:var(--plane)}
+.actg .ico{font-size:15px;width:20px;text-align:center;flex:0 0 auto}
+.actl{font-size:13px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.abtn{flex:0 0 auto;min-width:28px;padding:4px 9px;border:1px solid var(--ring);
+  border-radius:6px;cursor:pointer;background:var(--surface);color:var(--ink);font:12px system-ui}
 .abtn.go{background:var(--accent);color:#fff;border-color:transparent}
 .abtn:disabled{cursor:progress;opacity:.6}
 /* procesos en marcha — flotantes abajo-izquierda, minimizables, con progreso */
@@ -758,91 +761,95 @@ _FAVICON = (
 )
 
 
-# Launchable actions grouped like the SSH menu. The 3rd field marks a module that
-# ACTS (moves/deletes/repairs): from the web it gets a "simular" (dry-run) button and
-# an "ejecutar" (live, confirmed) one. Read-only entries get a single "lanzar" button.
+# Launchable actions grouped like the SSH menu. Fields: (action, label, acts?, icon).
+# ``acts`` marks a module that MOVES/CHANGES things → the web gives it "simular"
+# (dry-run) + "ejecutar" (live, confirmed); read-only entries get one "▶" button.
 # Keep the action ids in sync with webui.py's _READONLY_ACTIONS / _ACTING_ACTIONS.
-_ACTION_GROUPS: tuple[tuple[str, tuple[tuple[str, str, bool], ...]], ...] = (
+_ACTION_GROUPS: tuple[tuple[str, tuple[tuple[str, str, bool, str], ...]], ...] = (
     (
-        "Salud & pipelines",
+        "🩺 Salud & pipelines",
         (
-            ("health", "Chequeo de salud", False),
-            ("hourly", "Refresco horario", False),
-            ("nightly", "Barrido + aviso Telegram", False),
-            ("uptime", "Servicios", False),
-            ("status", "Estado del sistema", False),
+            ("health", "Chequeo de salud", False, "🩺"),
+            ("hourly", "Refresco horario", False, "🔄"),
+            ("nightly", "Barrido + aviso", False, "🌙"),
+            ("uptime", "Servicios", False, "📡"),
+            ("status", "Estado del sistema", False, "🖥️"),
         ),
     ),
     (
-        "Doctores",
+        "🩹 Doctores",
         (
-            ("dbcheck", "Integridad DB", False),
-            ("permsdoctor", "Permisos", False),
-            ("netdoctor", "Red / DNS", False),
-            ("certdoctor", "Certificados", False),
-            ("capacitydoctor", "Capacidad disco", False),
-            ("backupaudit", "Backups", False),
-            ("diskwatch", "Discos SMART", False),
+            ("dbcheck", "Integridad DB", False, "🗄️"),
+            ("permsdoctor", "Permisos", False, "🔑"),
+            ("netdoctor", "Red / DNS", False, "🌐"),
+            ("certdoctor", "Certificados", False, "🔒"),
+            ("capacitydoctor", "Capacidad disco", False, "📈"),
+            ("backupaudit", "Backups", False, "💾"),
+            ("diskwatch", "Discos SMART", False, "💽"),
         ),
     ),
     (
-        "IA & config",
+        "🧠 IA & config",
         (
-            ("analyst", "Analista IA", False),
-            ("logwatch", "Logs IA", False),
-            ("autoheal", "Autoheal (propone)", False),
-            ("configcheck", "Config-doctor", False),
-            ("notifypush", "Enviar informe Telegram", False),
-            ("metricsexport", "Métricas Prometheus", False),
-            ("retention", "Retención / limpieza", False),
+            ("analyst", "Analista IA", False, "🧠"),
+            ("logwatch", "Logs IA", False, "📋"),
+            ("autoheal", "Autoheal (propone)", False, "🩺"),
+            ("configcheck", "Config-doctor", False, "⚙️"),
+            ("notifypush", "Informe Telegram", False, "📨"),
+            ("metricsexport", "Métricas Prometheus", False, "📊"),
+            ("retention", "Retención / limpieza", False, "🧹"),
         ),
     ),
     (
-        "Inventario",
+        "📦 Inventario",
         (
-            ("disk_inventory", "Discos", False),
-            ("docker_inventory", "Contenedores", False),
-            ("network_inventory", "Red", False),
-            ("share_inventory", "Shares", False),
+            ("disk_inventory", "Discos", False, "💿"),
+            ("docker_inventory", "Contenedores", False, "🐳"),
+            ("network_inventory", "Red", False, "🕸️"),
+            ("share_inventory", "Shares", False, "📁"),
         ),
     ),
     (
-        "Media — ACTÚAN",
+        "🎬 Media — ACTÚAN",
         (
-            ("organizer", "Organizar", True),
-            ("extractor", "Descomprimir", True),
-            ("plex_dupefinder", "Quitar duplicados", True),
-            ("plexrefresh", "Refrescar Plex", True),
-            ("radarr_tagger", "Etiquetar Radarr (sagas)", True),
+            ("organizer", "Organizar", True, "🗂️"),
+            ("extractor", "Descomprimir", True, "📦"),
+            ("plex_dupefinder", "Quitar duplicados", True, "👯"),
+            ("plexrefresh", "Refrescar Plex", True, "🎬"),
+            ("radarr_tagger", "Etiquetar Radarr", True, "🏷️"),
         ),
     ),
 )
 
 
 def _actions_panel() -> str:
-    """A collapsed 'Acciones' section with grouped launch buttons (read-only + acting)."""
+    """A collapsed 'Acciones' section: icon + label chips in an aligned grid."""
     groups: list[str] = []
     for name, items in _ACTION_GROUPS:
-        btns: list[str] = []
-        for act, label, acting in items:
-            a, lb = html.escape(act), html.escape(label)
+        chips: list[str] = []
+        for act, label, acting, icon in items:
+            a, lb, ic = html.escape(act), html.escape(label), html.escape(icon)
             if acting:
-                btns.append(
-                    f'<span class="actg"><span class="actl">{lb}</span>'
-                    f'<button class="abtn" data-act="{a}" data-dry="1">▷ simular</button>'
-                    f'<button class="abtn go" data-act="{a}" data-dry="0" data-confirm="1">'
-                    "▶ ejecutar</button></span>"
+                btns = (
+                    f'<button class="abtn" data-act="{a}" data-dry="1" title="simular">'
+                    "▷</button>"
+                    f'<button class="abtn go" data-act="{a}" data-dry="0" data-confirm="1" '
+                    'title="ejecutar en vivo">▶</button>'
                 )
             else:
-                btns.append(
-                    f'<span class="actg"><span class="actl">{lb}</span>'
-                    f'<button class="abtn" data-act="{a}" data-dry="0">▶ lanzar</button></span>'
-                )
-        groups.append(f'<div class="actgrp"><h4>{html.escape(name)}</h4>{"".join(btns)}</div>')
+                btns = f'<button class="abtn" data-act="{a}" data-dry="0" title="lanzar">▶</button>'
+            chips.append(
+                f'<div class="actg"><span class="ico">{ic}</span>'
+                f'<span class="actl">{lb}</span>{btns}</div>'
+            )
+        groups.append(
+            f'<div class="actsec"><h4>{html.escape(name)}</h4>'
+            f'<div class="actgrid">{"".join(chips)}</div></div>'
+        )
     return (
         '<details class="actions"><summary>⚙️ Acciones — lanzar módulos</summary>'
-        '<p class="sub">Los de solo lectura se ejecutan en vivo. Los de «Media» ACTÚAN: '
-        "«simular» no cambia nada; «ejecutar» pide confirmación y actúa en vivo.</p>"
+        '<p class="sub">Solo lectura → <b>▶</b> se ejecuta en vivo. «Media» ACTÚAN: '
+        "<b>▷</b> simula (no cambia nada), <b>▶</b> ejecuta en vivo tras confirmar.</p>"
         f'{"".join(groups)}</details>'
     )
 
