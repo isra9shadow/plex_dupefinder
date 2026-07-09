@@ -259,6 +259,14 @@ def extractor_command(*, dry, image=DOCKER_IMAGE):
     return _docker_run(*inner, image=image)
 
 
+def radarr_tagger_command(*, dry, image=DOCKER_IMAGE):
+    """Argv to run the Radarr tagger in a container (dry-run only SIMULATES)."""
+    inner = ["python", "run.py", "radarr_tagger"]
+    if dry:
+        inner.append("--dry-run")
+    return _docker_run(*inner, image=image)
+
+
 def analyst_command(image=DOCKER_IMAGE):
     """Argv to run the results analyst (reads the organizer plan, summarizes with
     the local AI why files were not moved). Read-only."""
@@ -617,6 +625,19 @@ def action_extract():
         image = ensure_image()
         with temp_config(IZUMI_CFG, set_izumi_live):
             _run(extractor_command(dry=False, image=image))
+
+
+def action_radarr_tagger_simulate():
+    _run(radarr_tagger_command(dry=True, image=ensure_image()))
+    _show_report("radarr_tagger", "Etiquetado Radarr (simulación)")
+
+
+def action_radarr_tagger_apply():
+    if confirm("Esto ESCRIBIRÁ tags izumi:saga en Radarr (real, reversible). ¿Continuar?"):
+        image = ensure_image()
+        with temp_config(IZUMI_CFG, set_izumi_live):
+            _run(radarr_tagger_command(dry=False, image=image))
+        _show_report("radarr_tagger", "Etiquetado Radarr")
 
 
 def _show_report(subdir, label):
@@ -1172,6 +1193,8 @@ def action_advanced_menu():
             ("Doctor de certificados TLS (caducidad)", action_certdoctor),
             ("Doctor de capacidad de disco (previsión)", action_capacitydoctor),
             ("Refrescar Plex tras tdarr (falsos duplicados)", action_plexrefresh),
+            ("Etiquetar Radarr — simular (izumi:saga)", action_radarr_tagger_simulate),
+            ("Etiquetar Radarr — aplicar (escribe tags)", action_radarr_tagger_apply),
             ("Monitor de paridad (shadowcheck)", action_shadowcheck),
             ("Ver último plan del organizador", action_show_organizer_plan),
             ("Organizar — solo limpiar basura (no mueve)", action_organizer_cleanup_only),

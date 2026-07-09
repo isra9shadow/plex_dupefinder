@@ -92,6 +92,20 @@ def test_jobs_registry_tracks_progress() -> None:
     assert job["state"] == "running" and job["total"] == 3 and job["current"] == "netdoctor"
 
 
+def test_job_log_handler_captures_lines_into_snapshot() -> None:
+    import logging
+
+    webui._JOBS.clear()
+    jid = webui._new_job("dbcheck", dry_run=False)
+    handler = webui._JobLogHandler(jid)
+    rec = logging.LogRecord("izumi.dbcheck", logging.INFO, __file__, 1, "scanning", None, None)
+    rec.fields = {"db": "radarr"}  # type: ignore[attr-defined]
+    handler.emit(rec)
+    snap = next(j for j in webui.jobs_snapshot() if j["id"] == jid)
+    assert snap["log"] == ["I scanning db=radarr"]
+    webui._JOBS.clear()
+
+
 def test_jobs_snapshot_newest_first_and_capped() -> None:
     webui._JOBS.clear()
     for i in range(25):

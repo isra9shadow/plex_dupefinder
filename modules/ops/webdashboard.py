@@ -232,7 +232,8 @@ details.actions[open]>summary::before{content:"▾ "}
 .abtn:disabled{cursor:progress;opacity:.6}
 /* procesos en marcha — flotantes abajo-izquierda, minimizables, con progreso */
 #jobs{position:fixed;left:16px;bottom:16px;display:flex;flex-direction:column-reverse;gap:8px;
-  z-index:65;max-width:340px}
+  z-index:65}
+.job{width:440px;max-width:calc(100vw - 32px)} .job.min{width:300px}
 .job{background:var(--surface);border:1px solid var(--ring);border-left:4px solid var(--spark);
   border-radius:10px;padding:9px 12px;box-shadow:0 8px 28px rgba(0,0,0,.3);font-size:13px;
   animation:izin .18s ease}
@@ -250,6 +251,10 @@ details.actions[open]>summary::before{content:"▾ "}
 .job .jmeta{display:flex;justify-content:space-between;color:var(--muted);font-size:11.5px}
 .job .jmsg{margin-top:6px;color:var(--ink2);font-size:12px}
 .job.min{padding:7px 12px} .job.min .jb{display:none}
+.job .jlog{margin:8px 0 0;max-height:180px;overflow:auto;background:var(--plane);
+  border:1px solid var(--ring);border-radius:7px;padding:7px 9px;white-space:pre-wrap;
+  word-break:break-word;font:11.5px/1.45 ui-monospace,monospace;color:var(--ink2)}
+.job .jlog:empty{display:none}
 """
 
 _JS = r"""
@@ -350,7 +355,7 @@ function addJob(id,action,dry){const el=document.createElement('div');
     +'<button class="jx" title="cerrar" style="display:none">✕</button></span></div>'
     +'<div class="jb"><div class="jbar ind"><i></i></div>'
     +'<div class="jmeta"><span class="jstep">en cola…</span><span class="jel"></span></div>'
-    +'<div class="jmsg"></div></div>';
+    +'<pre class="jlog"></pre><div class="jmsg"></div></div>';
   el.querySelector('.jt').textContent=(dry?'▷ ':'▶ ')+action;
   const mb=el.querySelector('.jmin');
   mb.onclick=()=>{el.classList.toggle('min');
@@ -367,6 +372,13 @@ function renderJob(j){const o=JOBS[j.id];if(!o)return;const el=o.el;
   else{bar.classList.toggle('ind',running);fill.style.width='100%';
     step.textContent=j.current||'';pct.textContent='';}
   const t1=j.finished||Date.now()/1000;elp.textContent=fmtEl(t1-(j.started||t1));
+  const logEl=el.querySelector('.jlog');
+  if(logEl && Array.isArray(j.log)){
+    const atBottom=logEl.scrollTop+logEl.clientHeight>=logEl.scrollHeight-8;
+    const txt=j.log.join('\n');
+    if(logEl.textContent!==txt){logEl.textContent=txt;
+      if(atBottom)logEl.scrollTop=logEl.scrollHeight;}
+  }
   if(!running){bar.classList.remove('ind');fill.style.width='100%';
     el.classList.toggle('done',j.state==='done');el.classList.toggle('err',j.state==='error');
     pct.innerHTML=j.state==='done'?'✓':'✕';msg.textContent=j.message||'';

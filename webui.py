@@ -28,6 +28,7 @@ import base64
 import hmac
 import http.server
 import json
+import logging
 import os
 import queue
 import socketserver
@@ -240,8 +241,38 @@ def _new_job(action: str, *, dry_run: bool) -> str:
             "current": "",
             "message": "",
             "ok": False,
+            "log": [],  # rolling tail of the run's log lines (live progress)
         }
     return jid
+
+
+class _JobLogHandler(logging.Handler):
+    """Capture a running job's log lines into its registry entry (live progress)."""
+
+    def __init__(self, jid: str) -> None:
+        super().__init__(level=logging.INFO)
+        self._jid = jid
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = record.getMessage()
+            fields = getattr(record, "fields", None)
+            if isinstance(fields, dict) and fields:
+                msg += " " + " ".join(f"{k}={v}" for k, v in fields.items())
+            line = f"{record.levelname[0]} {msg}"
+        except Exception:  # a bad record must never break the run
+            return
+        with _JOBS_LOCK:
+            job = _JOBS.get(self._jid)
+            if job is None:
+                return
+            log = job.get("log")
+            if not isinstance(log, list):
+                log = []
+                job["log"] = log
+            log.append(line)
+            if len(log) > 150:  # keep only the recent tail
+                del log[:-150]
 
 
 def _update_job(jid: str, **fields: object) -> None:
@@ -253,7 +284,7 @@ def _update_job(jid: str, **fields: object) -> None:
 def jobs_snapshot(limit: int = 20) -> list[dict[str, object]]:
     """Recent jobs, newest first (GET /api/jobs) — a pure read of the registry."""
     with _JOBS_LOCK:
-        jobs = [dict(j) for j in _JOBS.values()]
+        jobs = [{**j, "log": list(j.get("log") or [])} for j in _JOBS.values()]
     jobs.sort(key=lambda j: float(j.get("started") or 0.0), reverse=True)
     return jobs[:limit]
 
@@ -273,19 +304,29 @@ def _execute_job(jid: str) -> None:  # pragma: no cover - needs the platform
     if dry_run:
         cfg = config_mod.with_mode(cfg, SafetyMode.DRY_RUN)
     registry.discover()
-    ctx = build_context(cfg)
-    if action in cfg.pipelines:
-        mods = list(cfg.pipelines[action])
-        total = len(mods)
-        _update_job(jid, total=total)
-        rc = 0
-        for i, mod in enumerate(mods, 1):
-            _update_job(jid, step=i, current=mod)
-            rc = _run_module(ctx, mod) or rc
-    else:
-        total = 1
-        _update_job(jid, total=1, step=1, current=action)
-        rc = _run_module(ctx, action)
+    ctx = build_context(cfg)  # (re)configures the izumi logger; attach AFTER it
+    # Capture live log output: the izumi logger (all modules) has propagate=False, so
+    # also hook root to catch the legacy engine / third-party logs.
+    handler = _JobLogHandler(jid)
+    hooked = [logging.getLogger("izumi"), logging.getLogger()]
+    for base_logger in hooked:
+        base_logger.addHandler(handler)
+    try:
+        if action in cfg.pipelines:
+            mods = list(cfg.pipelines[action])
+            total = len(mods)
+            _update_job(jid, total=total)
+            rc = 0
+            for i, mod in enumerate(mods, 1):
+                _update_job(jid, step=i, current=mod)
+                rc = _run_module(ctx, mod) or rc
+        else:
+            total = 1
+            _update_job(jid, total=1, step=1, current=action)
+            rc = _run_module(ctx, action)
+    finally:
+        for base_logger in hooked:
+            base_logger.removeHandler(handler)
     prefix = "(simulación) " if dry_run else ""
     msg = prefix + humanize_action_result(action, rc, str(cfg.reporting.dir))
     _update_job(jid, state="done", ok=rc == 0, message=msg, step=total, finished=time.time())
