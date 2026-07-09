@@ -79,6 +79,15 @@ class ArrClient:
         body = json.dumps(payload).encode("utf-8")
         try:
             text = self._write(method, url, headers, body, self._timeout)
+        except urllib.error.HTTPError as exc:  # include Radarr's validation detail
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:300].strip()
+            except Exception:  # best effort; the body may be unreadable
+                detail = ""
+            raise IntegrationError(
+                f"ARR write failed: {method} {url}: HTTP {exc.code}: {detail or exc.reason}"
+            ) from exc
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             raise IntegrationError(f"ARR write failed: {method} {url}: {exc}") from exc
         if not text.strip():

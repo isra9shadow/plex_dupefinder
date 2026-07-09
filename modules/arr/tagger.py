@@ -4,7 +4,7 @@ filters can use them (the first case: ``saga`` = belongs to any TMDb collection)
 Why: Radarr can filter by a *specific* collection but not by "belongs to ANY
 collection", so a low-quality cleanup filter wrongly surfaces saga movies you want
 to keep. This module tags every movie in a collection with ``<prefix>saga`` (default
-``izumi:saga``); you then filter ``Etiqueta NO contiene izumi:saga``.
+``izumi-saga``); you then filter ``Etiqueta NO contiene izumi-saga``.
 
 It is rule-driven but deliberately small (see ``tag_rules``): a flat list of
 ``{tag, all:[conditions]}`` over the movie object Radarr already returns — no TMDb,
@@ -19,7 +19,7 @@ Safety:
 Config (config.json):
   integrations.radarr : {url, api_key_ref}                  # reused (see arr/orphans)
   integrations.radarr_tagger :
-    managed_prefix : label prefix izumi owns (default "izumi:")
+    managed_prefix : label prefix izumi owns (default "izumi-")
     rules          : list of {tag, all:[{predicate: param}, …]} (default: saga)
 """
 
@@ -37,7 +37,7 @@ from integrations.radarr import RadarrClient
 
 from modules.arr.tag_rules import DEFAULT_RULES, desired_tags
 
-_DEFAULT_PREFIX = "izumi:"
+_DEFAULT_PREFIX = "izumi-"  # Radarr tag labels reject ':' → use a hyphen (izumi-saga)
 _BATCH = 200  # movies per PUT /movie/editor call (avoid timeouts on big libraries)
 
 

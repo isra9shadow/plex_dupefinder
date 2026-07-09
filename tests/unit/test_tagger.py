@@ -50,7 +50,7 @@ def test_dry_run_reports_diff_but_writes_nothing(tmp_path: Path) -> None:
     assert calls == []  # nothing written to Radarr
     assert result.actions == 0
     assert result.metrics["to_add"] == 1.0
-    assert _plan(tmp_path)["to_add"] == {"izumi:saga": 1}
+    assert _plan(tmp_path)["to_add"] == {"izumi-saga": 1}
 
 
 def test_live_creates_tag_and_adds_it_in_bulk(tmp_path: Path) -> None:
@@ -84,8 +84,8 @@ def test_live_batches_large_add_to_avoid_timeout(tmp_path: Path) -> None:
 
 
 def test_live_removes_managed_tag_when_no_longer_matches(tmp_path: Path) -> None:
-    # Movie has izumi:saga but is no longer in a collection → tag must be removed.
-    tags = [{"id": 99, "label": "izumi:saga"}]
+    # Movie has izumi-saga but is no longer in a collection → tag must be removed.
+    tags = [{"id": 99, "label": "izumi-saga"}]
     movies = [{"id": 1, "collection": None, "tags": [99]}]
     calls: list[tuple] = []
     ctx = make_context(tmp_path, mode=SafetyMode.LIVE)
