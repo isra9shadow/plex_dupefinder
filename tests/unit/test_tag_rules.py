@@ -51,6 +51,19 @@ def test_quality_predicates_read_moviefile() -> None:
     assert tag_rules.desired_tags({"id": 2, "movieFile": {}}, rules) == set()
 
 
+def test_title_contains_any_covers_tmdb_collection_gaps() -> None:
+    rules = [{"tag": "saga", "all": [{"title_contains_any": ["Hellboy", "Daredevil"]}]}]
+    assert tag_rules.desired_tags({"title": "Hellboy II: The Golden Army"}, rules) == {"saga"}
+    assert tag_rules.desired_tags({"title": "daredevil"}, rules) == {"saga"}  # case-insensitive
+    assert tag_rules.desired_tags({"title": "The Matrix"}, rules) == set()
+    assert (
+        tag_rules.desired_tags(
+            {"title": "X"}, [{"tag": "s", "all": [{"title_contains_any": "no"}]}]
+        )
+        == set()
+    )
+
+
 def test_unknown_predicate_fails_closed() -> None:
     rules = [{"tag": "x", "all": [{"no_such_predicate": 1}]}]
     assert tag_rules.desired_tags({"id": 1, "collection": {"x": 1}}, rules) == set()

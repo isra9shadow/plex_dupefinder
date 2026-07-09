@@ -117,6 +117,18 @@ def _added_before_months(movie: Mapping[str, object], param: object) -> bool:
     return threshold is not None and months is not None and months >= threshold
 
 
+def _title_contains_any(movie: Mapping[str, object], param: object) -> bool:
+    """True if the movie title contains any of the given substrings (case-insensitive).
+
+    Escape hatch for franchises TMDb has NO collection for (e.g. ["Hellboy",
+    "Daredevil", "Blade"]) — list their names and they get the tag too.
+    """
+    if not isinstance(param, (list, tuple)):
+        return False
+    title = str(movie.get("title", "")).lower()
+    return any(isinstance(s, str) and s.strip() and s.strip().lower() in title for s in param)
+
+
 _PREDICATES: dict[str, Callable[[Mapping[str, object], object], bool]] = {
     "has_collection": _has_collection,
     "imdb_lt": _rating_lt("imdb"),
@@ -127,6 +139,7 @@ _PREDICATES: dict[str, Callable[[Mapping[str, object], object], bool]] = {
     "resolution_gte": _resolution_gte,
     "year_lt": _year_lt,
     "added_before_months": _added_before_months,
+    "title_contains_any": _title_contains_any,
 }
 
 
