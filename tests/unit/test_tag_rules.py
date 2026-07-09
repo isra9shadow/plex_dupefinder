@@ -67,3 +67,31 @@ def test_title_contains_any_covers_tmdb_collection_gaps() -> None:
 def test_unknown_predicate_fails_closed() -> None:
     rules = [{"tag": "x", "all": [{"no_such_predicate": 1}]}]
     assert tag_rules.desired_tags({"id": 1, "collection": {"x": 1}}, rules) == set()
+
+
+def test_normalize_title_reduces_to_franchise_stem() -> None:
+    n = tag_rules.normalize_title
+    assert n("Hellboy II: The Golden Army") == "hellboy"
+    assert n("Hellboy (2019)") == "hellboy"
+    assert n("Rocky IV") == "rocky"
+    assert n("Scream 2") == "scream"
+
+
+def test_franchise_groups_finds_shared_stems() -> None:
+    movies = [
+        {"id": 1, "title": "Hellboy"},
+        {"id": 2, "title": "Hellboy II: The Golden Army"},
+        {"id": 3, "title": "The Matrix"},  # alone → not a group
+    ]
+    groups = tag_rules.franchise_groups(movies, 2)
+    assert {stem for stem, _ids, _titles in groups} == {"hellboy"}
+    ids = next(ids for stem, ids, _t in groups if stem == "hellboy")
+    assert sorted(ids) == [1, 2]
+
+
+def test_cluster_prompt_and_affirmative_parsing() -> None:
+    prompt = tag_rules.build_cluster_prompt(["Hellboy", "Hellboy II"])
+    assert "Hellboy II" in prompt and "SI o NO" in prompt
+    assert tag_rules.is_affirmative("SÍ, son la misma saga")
+    assert tag_rules.is_affirmative("yes")
+    assert not tag_rules.is_affirmative("No, no lo son")

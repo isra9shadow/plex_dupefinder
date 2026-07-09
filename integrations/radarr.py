@@ -24,3 +24,9 @@ class RadarrClient(ArrClient):
                 "applyTags": "add" if add else "remove",
             },
         )
+
+    def refresh_movies(self, movie_ids: Sequence[int]) -> None:
+        """Queue a metadata refresh (from TMDb, incl. collection) for these movies."""
+        if not movie_ids:
+            return
+        self._send("POST", "command", {"name": "RefreshMovie", "movieIds": list(movie_ids)})

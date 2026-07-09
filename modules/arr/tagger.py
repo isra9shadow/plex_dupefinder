@@ -27,18 +27,30 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from core import secrets
+from core.cache import Cache
 from core.errors import ConfigError, IntegrationError, SecretError
 from core.registry import register
 from core.types import FailureRecord, ModuleResult, RunContext, SafetyMode
 from integrations.radarr import RadarrClient
 
-from modules.arr.tag_rules import DEFAULT_RULES, desired_tags
+from modules.arr.tag_rules import (
+    DEFAULT_RULES,
+    build_cluster_prompt,
+    desired_tags,
+    franchise_groups,
+    is_affirmative,
+)
+
+# (prompt) -> answer. Injected so tests never call the LLM (Phase B verification).
+LLM = Callable[[str], str]
 
 _DEFAULT_PREFIX = "izumi-"  # Radarr tag labels reject ':' → use a hyphen (izumi-saga)
 _BATCH = 200  # movies per PUT /movie/editor call (avoid timeouts on big libraries)
+_REFRESH_BATCH = 100  # movies per RefreshMovie command
 
 
 def _chunks(items: list[int], size: int) -> list[list[int]]:
@@ -49,6 +61,15 @@ def _chunks(items: list[int], size: int) -> list[list[int]]:
 class _Settings:
     managed_prefix: str
     rules: tuple[dict[str, object], ...]
+    cluster: bool  # Phase A: tag movies that share a title stem (franchise heuristic)
+    cluster_min: int
+    cluster_tag: str
+    cluster_verify: bool  # Phase B: have the local LLM confirm each candidate group
+    refresh_untagged: bool  # queue a Radarr metadata refresh for movies without the tag
+
+
+def _bool(value: object) -> bool:
+    return value is True
 
 
 def _settings(ctx: RunContext) -> _Settings:
@@ -60,10 +81,83 @@ def _settings(ctx: RunContext) -> _Settings:
         if isinstance(raw_rules, list) and raw_rules
         else DEFAULT_RULES
     )
+    cmin = cfg.get("cluster_min")
+    ctag = cfg.get("cluster_tag")
     return _Settings(
         managed_prefix=prefix if isinstance(prefix, str) and prefix else _DEFAULT_PREFIX,
         rules=rules,
+        cluster=_bool(cfg.get("cluster")),
+        cluster_min=cmin
+        if isinstance(cmin, int) and not isinstance(cmin, bool) and cmin >= 2
+        else 2,
+        cluster_tag=ctag if isinstance(ctag, str) and ctag else "saga",
+        cluster_verify=_bool(cfg.get("cluster_verify")),
+        refresh_untagged=_bool(cfg.get("refresh_untagged")),
     )
+
+
+def _make_llm(ctx: RunContext) -> LLM:
+    def _call(prompt: str) -> str:  # pragma: no cover - needs Ollama
+        from integrations.ollama import OllamaClient
+
+        cfg = ctx.config.integrations.get("ollama", {})
+        kwargs: dict[str, object] = {}
+        base, model = cfg.get("base_url"), cfg.get("model")
+        if isinstance(base, str) and base:
+            kwargs["base_url"] = base
+        if isinstance(model, str) and model:
+            kwargs["model"] = model
+        return OllamaClient(**kwargs).complete(prompt)  # type: ignore[arg-type]
+
+    return _call
+
+
+def _cluster_ids(
+    groups: list[tuple[str, list[int], list[str]]],
+    *,
+    verify: bool,
+    llm: LLM,
+    cache: Cache | None,
+) -> set[int]:
+    """Movie ids to tag from clustering. With ``verify``, the LLM confirms each group
+    (cached by stem); it fails OPEN (keep) since over-tagging only over-protects."""
+    if not verify:
+        return {mid for _stem, ids, _titles in groups for mid in ids}
+    out: set[int] = set()
+    for stem, ids, titles in groups:
+        key = f"franchise:{stem}"
+        cached = cache.get(key) if cache is not None else None
+        if isinstance(cached, bool):
+            ok = cached
+        else:
+            try:
+                ok = is_affirmative(llm(build_cluster_prompt(titles)))
+            except Exception:  # LLM down/unreachable → keep the group (safe)
+                ok = True
+            if cache is not None:
+                cache.set(key, ok)
+        if ok:
+            out.update(ids)
+    if cache is not None:
+        cache.save()
+    return out
+
+
+def _untagged_ids(
+    movies: list[dict[str, object]], label_to_id: dict[str, int], saga_label: str
+) -> list[int]:
+    """Movie ids that do NOT currently carry the managed saga tag (refresh targets)."""
+    saga_id = label_to_id.get(saga_label)
+    out: list[int] = []
+    for movie in movies:
+        mid = _int(movie.get("id"))
+        if mid is None:
+            continue
+        raw = movie.get("tags")
+        tags = raw if isinstance(raw, list) else []
+        if saga_id is None or saga_id not in tags:
+            out.append(mid)
+    return out
 
 
 def _radarr(ctx: RunContext) -> RadarrClient:
@@ -89,9 +183,11 @@ def _plan_changes(
     movies: list[dict[str, object]],
     id_to_label: dict[int, str],
     settings: _Settings,
+    cluster_ids: set[int] | None = None,
 ) -> _Plan:
     """Pure diff: which managed tags to add/remove on which movies (no I/O)."""
     prefix = settings.managed_prefix
+    clusters = cluster_ids or set()
     managed = {lbl for lbl in id_to_label.values() if lbl.startswith(prefix)}
     add: dict[str, list[int]] = defaultdict(list)
     remove: dict[str, list[int]] = defaultdict(list)
@@ -102,6 +198,8 @@ def _plan_changes(
             continue
         evaluated += 1
         want = {prefix + t for t in desired_tags(movie, settings.rules)}
+        if mid in clusters:  # franchise-by-title-stem (Phase A/B) → same saga tag
+            want.add(prefix + settings.cluster_tag)
         raw_tags = movie.get("tags")
         have = {
             id_to_label[tid]
@@ -116,7 +214,13 @@ def _plan_changes(
 
 
 def _write_report(
-    ctx: RunContext, plan: _Plan, *, dry_run: bool, applied: int, apply_error: str = ""
+    ctx: RunContext,
+    plan: _Plan,
+    *,
+    dry_run: bool,
+    applied: int,
+    apply_error: str = "",
+    refreshed: int = 0,
 ) -> None:
     out_dir = ctx.config.reporting.dir / "radarr_tagger"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -131,6 +235,7 @@ def _write_report(
                 "to_remove": rem_counts,
                 "applied": applied,
                 "apply_error": apply_error,
+                "refreshed": refreshed,
             },
             indent=2,
             sort_keys=True,
@@ -139,10 +244,12 @@ def _write_report(
         encoding="utf-8",
     )
     mode_label = "DRY-RUN (no escribe)" if dry_run else "LIVE"
+    refresh_note = f" · refrescadas: {refreshed}" if refreshed else ""
     lines = [
         "# Radarr tagger",
         "",
-        f"Modo: {mode_label} · películas evaluadas: {plan.evaluated} · aplicados: {applied}",
+        f"Modo: {mode_label} · películas evaluadas: {plan.evaluated} · "
+        f"aplicados: {applied}{refresh_note}",
         "",
     ]
     if apply_error:
@@ -178,10 +285,12 @@ def _fail(ctx: RunContext, result: ModuleResult, category: str, msg: str) -> Mod
 
 
 @register("radarr_tagger")
-def run(ctx: RunContext, *, client: RadarrClient | None = None) -> ModuleResult:
-    """Compute izumi-managed Radarr tags from rules and apply the diff (LIVE only).
+def run(
+    ctx: RunContext, *, client: RadarrClient | None = None, llm: LLM | None = None
+) -> ModuleResult:
+    """Compute izumi-managed Radarr tags from rules + clustering and apply (LIVE only).
 
-    ``client`` is injected in tests; production builds it from config via ``_radarr``.
+    ``client``/``llm`` are injected in tests; production builds them from config.
     """
     result = ModuleResult(module="radarr_tagger", run_id=ctx.run_id, mode=ctx.mode)
     settings = _settings(ctx)
@@ -204,7 +313,37 @@ def run(ctx: RunContext, *, client: RadarrClient | None = None) -> ModuleResult:
             label_to_id[lbl] = tid
             id_to_label[tid] = lbl
 
-    plan = _plan_changes(movies, id_to_label, settings)
+    # Phase A/B: franchise clustering by shared title stem, optionally LLM-verified.
+    cluster_ids: set[int] = set()
+    if settings.cluster:
+        groups = franchise_groups(movies, settings.cluster_min)
+        cache = (
+            Cache(ctx.config.reporting.dir / "cache" / "radarr_tagger.db")
+            if settings.cluster_verify
+            else None
+        )
+        cluster_ids = _cluster_ids(
+            groups, verify=settings.cluster_verify, llm=llm or _make_llm(ctx), cache=cache
+        )
+
+    # Optional: queue a Radarr metadata refresh for movies WITHOUT the saga tag, so
+    # collections Radarr hasn't synced land by the NEXT run (fire-and-forget).
+    refreshed = 0
+    if settings.refresh_untagged:
+        saga_label = settings.managed_prefix + settings.cluster_tag
+        targets = _untagged_ids(movies, label_to_id, saga_label)
+        if dry_run:
+            refreshed = len(targets)
+        elif targets:
+            try:
+                for chunk in _chunks(targets, _REFRESH_BATCH):
+                    rc.refresh_movies(chunk)
+                    refreshed += len(chunk)
+            except IntegrationError as exc:
+                result.add_failure(FailureRecord(category="integration", message=str(exc)))
+                ctx.logger.warning("radarr_tagger refresh failed", error=str(exc))
+
+    plan = _plan_changes(movies, id_to_label, settings, cluster_ids)
 
     applied = 0
     apply_error = ""
@@ -231,7 +370,9 @@ def run(ctx: RunContext, *, client: RadarrClient | None = None) -> ModuleResult:
             result.add_failure(FailureRecord(category="integration", message=apply_error))
             ctx.logger.warning("radarr_tagger apply failed", error=apply_error, applied=applied)
 
-    _write_report(ctx, plan, dry_run=dry_run, applied=applied, apply_error=apply_error)
+    _write_report(
+        ctx, plan, dry_run=dry_run, applied=applied, apply_error=apply_error, refreshed=refreshed
+    )
     to_add = sum(len(v) for v in plan.add.values())
     to_remove = sum(len(v) for v in plan.remove.values())
     ctx.logger.info(
@@ -240,10 +381,13 @@ def run(ctx: RunContext, *, client: RadarrClient | None = None) -> ModuleResult:
         to_add=to_add,
         to_remove=to_remove,
         applied=applied,
+        refreshed=refreshed,
+        clustered=len(cluster_ids),
         dry_run=dry_run,
     )
     result.metrics["evaluated"] = float(plan.evaluated)
     result.metrics["to_add"] = float(to_add)
     result.metrics["to_remove"] = float(to_remove)
+    result.metrics["refreshed"] = float(refreshed)
     result.actions = applied
     return result

@@ -96,6 +96,60 @@ def test_live_removes_managed_tag_when_no_longer_matches(tmp_path: Path) -> None
     assert result.metrics["to_remove"] == 1.0
 
 
+def test_cluster_tags_shared_stem_group(tmp_path: Path) -> None:
+    movies = [
+        {"id": 1, "title": "Hellboy", "collection": None},
+        {"id": 2, "title": "Hellboy II: The Golden Army", "collection": None},
+        {"id": 3, "title": "The Matrix", "collection": None},  # alone → not tagged
+    ]
+    ctx = make_context(tmp_path, integrations={"radarr_tagger": {"cluster": True}})
+    result = tagger.run(ctx, client=_client(movies, [], []))
+    assert result.metrics["to_add"] == 2.0
+    assert _plan(tmp_path)["to_add"] == {"izumi-saga": 2}
+
+
+def test_cluster_verify_llm_can_reject_or_confirm(tmp_path: Path) -> None:
+    movies = [
+        {"id": 1, "title": "Hellboy", "collection": None},
+        {"id": 2, "title": "Hellboy II", "collection": None},
+    ]
+    cfg = {"radarr_tagger": {"cluster": True, "cluster_verify": True}}
+    # Separate roots so the per-stem verification cache doesn't carry over.
+    rejected = tagger.run(
+        make_context(tmp_path / "a", integrations=cfg),
+        client=_client(movies, [], []),
+        llm=lambda _p: "NO",
+    )
+    assert rejected.metrics["to_add"] == 0.0  # LLM says not a franchise → not tagged
+
+    confirmed = tagger.run(
+        make_context(tmp_path / "b", integrations=cfg),
+        client=_client(movies, [], []),
+        llm=lambda _p: "SI",
+    )
+    assert confirmed.metrics["to_add"] == 2.0
+
+
+def test_refresh_untagged_dry_run_counts_targets(tmp_path: Path) -> None:
+    movies = [
+        {"id": 1, "collection": {"tmdbId": 1}, "tags": []},
+        {"id": 2, "collection": None, "tags": []},
+    ]
+    ctx = make_context(tmp_path, integrations={"radarr_tagger": {"refresh_untagged": True}})
+    result = tagger.run(ctx, client=_client(movies, [], []))  # DRY_RUN
+    assert result.metrics["refreshed"] == 2.0  # both lack izumi-saga → would refresh
+
+
+def test_refresh_untagged_live_calls_radarr(tmp_path: Path) -> None:
+    movies = [{"id": 1, "collection": None, "tags": []}]
+    calls: list[tuple] = []
+    ctx = make_context(
+        tmp_path, mode=SafetyMode.LIVE, integrations={"radarr_tagger": {"refresh_untagged": True}}
+    )
+    tagger.run(ctx, client=_client(movies, [], calls))
+    assert any(m == "POST" and u.endswith("/command") for m, u, _p in calls)
+
+
 def test_missing_radarr_config_writes_error_report(tmp_path: Path) -> None:
     # No integrations.radarr → builds client from config → ConfigError → error report.
     result = tagger.run(make_context(tmp_path))

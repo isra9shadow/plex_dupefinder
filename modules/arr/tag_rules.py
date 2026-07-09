@@ -13,6 +13,8 @@ collection with ``saga`` — the actual problem this feature solves.
 
 from __future__ import annotations
 
+import re
+from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 
@@ -155,6 +157,66 @@ def _condition_holds(movie: Mapping[str, object], cond: Mapping[str, object]) ->
         if fn is None or not fn(movie, param):  # unknown predicate → fail closed
             return False
     return True
+
+
+# --- franchise clustering (Phase A) + LLM verification prompt (Phase B) ---------
+
+_ROMAN = frozenset({"ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii"})
+_TRAIL = frozenset({"part", "parte", "chapter", "capitulo", "vol", "volume"})
+
+
+def normalize_title(title: str) -> str:
+    """Reduce a title to a franchise 'stem' for grouping (deterministic).
+
+    'Hellboy II: The Golden Army' / 'Hellboy (2019)' / 'Hellboy 2' → 'hellboy'.
+    Over-grouping is harmless here (it only over-*protects* from deletion).
+    """
+    text = title.lower()
+    for sep in (":", " - ", " – ", " — "):  # noqa: RUF001 - en/em dashes are intentional
+        if sep in text:
+            text = text.split(sep, 1)[0]
+    text = re.sub(r"[(\[]\s*(?:19|20)\d{2}\s*[)\]]", " ", text)  # drop a (2019) year
+    text = re.sub(r"[^\w\s]", " ", text)  # punctuation → space
+    words = text.split()
+    while words and (words[-1].isdigit() or words[-1] in _ROMAN or words[-1] in _TRAIL):
+        words.pop()
+    return " ".join(words).strip()
+
+
+def franchise_groups(
+    movies: Sequence[Mapping[str, object]], min_group: int = 2
+) -> list[tuple[str, list[int], list[str]]]:
+    """Group movies by shared title stem; return ``(stem, ids, titles)`` for groups
+    with at least ``min_group`` members (candidate franchises TMDb may lack)."""
+    groups: dict[str, tuple[list[int], list[str]]] = defaultdict(lambda: ([], []))
+    for movie in movies:
+        mid, title = movie.get("id"), movie.get("title")
+        if isinstance(mid, int) and not isinstance(mid, bool) and isinstance(title, str):
+            stem = normalize_title(title)
+            if len(stem) >= 2:
+                groups[stem][0].append(mid)
+                groups[stem][1].append(title)
+    return [
+        (stem, ids, titles)
+        for stem, (ids, titles) in sorted(groups.items())
+        if len(ids) >= min_group
+    ]
+
+
+def build_cluster_prompt(titles: Sequence[str]) -> str:
+    """Prompt asking the local LLM to confirm a candidate group IS one franchise."""
+    listed = "\n".join(f"- {t}" for t in titles)
+    return (
+        "¿Estas películas pertenecen a la MISMA saga/franquicia cinematográfica "
+        "(secuelas, precuelas o reinicios de la misma serie)? "
+        "Responde SOLO con una palabra: SI o NO.\n\n"
+        f"{listed}\n\nRespuesta:"
+    )
+
+
+def is_affirmative(text: str) -> bool:
+    """True if the LLM answer is a yes (tolerant of accents/casing/extra words)."""
+    return (text or "").strip().lower().startswith(("si", "sí", "yes", "true"))
 
 
 def desired_tags(movie: Mapping[str, object], rules: Sequence[Mapping[str, object]]) -> set[str]:
