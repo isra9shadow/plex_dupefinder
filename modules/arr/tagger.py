@@ -39,10 +39,10 @@ from integrations.radarr import RadarrClient
 
 from modules.arr.tag_rules import (
     DEFAULT_RULES,
-    build_cluster_prompt,
+    build_cluster_batch_prompt,
     desired_tags,
     franchise_groups,
-    is_affirmative,
+    parse_rejected,
 )
 
 # (prompt) -> answer. Injected so tests never call the LLM (Phase B verification).
@@ -65,11 +65,21 @@ class _Settings:
     cluster_min: int
     cluster_tag: str
     cluster_verify: bool  # Phase B: have the local LLM confirm each candidate group
+    cluster_batch: int  # groups per LLM call (fewer calls = faster)
+    cluster_verify_max: int  # cap NEW verifications per run (0 = unlimited); rest cached later
     refresh_untagged: bool  # queue a Radarr metadata refresh for movies without the tag
 
 
 def _bool(value: object) -> bool:
     return value is True
+
+
+def _pos_int(value: object, default: int, minimum: int = 0) -> int:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+        else default
+    )
 
 
 def _settings(ctx: RunContext) -> _Settings:
@@ -81,17 +91,16 @@ def _settings(ctx: RunContext) -> _Settings:
         if isinstance(raw_rules, list) and raw_rules
         else DEFAULT_RULES
     )
-    cmin = cfg.get("cluster_min")
     ctag = cfg.get("cluster_tag")
     return _Settings(
         managed_prefix=prefix if isinstance(prefix, str) and prefix else _DEFAULT_PREFIX,
         rules=rules,
         cluster=_bool(cfg.get("cluster")),
-        cluster_min=cmin
-        if isinstance(cmin, int) and not isinstance(cmin, bool) and cmin >= 2
-        else 2,
+        cluster_min=_pos_int(cfg.get("cluster_min"), 2, minimum=2),
         cluster_tag=ctag if isinstance(ctag, str) and ctag else "saga",
         cluster_verify=_bool(cfg.get("cluster_verify")),
+        cluster_batch=_pos_int(cfg.get("cluster_batch"), 20, minimum=1),
+        cluster_verify_max=_pos_int(cfg.get("cluster_verify_max"), 0),
         refresh_untagged=_bool(cfg.get("refresh_untagged")),
     )
 
@@ -114,30 +123,51 @@ def _make_llm(ctx: RunContext) -> LLM:
 
 def _cluster_ids(
     groups: list[tuple[str, list[int], list[str]]],
+    settings: _Settings,
     *,
-    verify: bool,
     llm: LLM,
     cache: Cache | None,
 ) -> set[int]:
-    """Movie ids to tag from clustering. With ``verify``, the LLM confirms each group
-    (cached by stem); it fails OPEN (keep) since over-tagging only over-protects."""
-    if not verify:
+    """Movie ids to tag from clustering.
+
+    With ``cluster_verify``, the LLM confirms candidate groups in BATCHES (few calls),
+    cached by stem, fail-OPEN (keep on doubt/LLM-down) since over-tagging only over-
+    protects. ``cluster_verify_max`` caps NEW verifications per run so a huge library
+    never blocks on the GPU — the rest are kept now and verified on later runs.
+    """
+    if not settings.cluster_verify:
         return {mid for _stem, ids, _titles in groups for mid in ids}
+
     out: set[int] = set()
+    pending: list[tuple[str, list[int], list[str]]] = []
     for stem, ids, titles in groups:
-        key = f"franchise:{stem}"
-        cached = cache.get(key) if cache is not None else None
+        cached = cache.get(f"franchise:{stem}") if cache is not None else None
         if isinstance(cached, bool):
-            ok = cached
+            if cached:
+                out.update(ids)
         else:
-            try:
-                ok = is_affirmative(llm(build_cluster_prompt(titles)))
-            except Exception:  # LLM down/unreachable → keep the group (safe)
-                ok = True
-            if cache is not None:
-                cache.set(key, ok)
-        if ok:
+            pending.append((stem, ids, titles))
+
+    if settings.cluster_verify_max > 0 and len(pending) > settings.cluster_verify_max:
+        deferred = pending[settings.cluster_verify_max :]  # keep now, verify next run
+        pending = pending[: settings.cluster_verify_max]
+        for _stem, ids, _titles in deferred:
             out.update(ids)
+
+    for i in range(0, len(pending), settings.cluster_batch):
+        chunk = pending[i : i + settings.cluster_batch]
+        try:
+            rejected = parse_rejected(
+                llm(build_cluster_batch_prompt([t for _s, _i, t in chunk])), len(chunk)
+            )
+        except Exception:  # LLM down/unreachable → keep the whole batch (safe)
+            rejected = set()
+        for j, (stem, ids, _titles) in enumerate(chunk, 1):
+            ok = j not in rejected
+            if cache is not None:
+                cache.set(f"franchise:{stem}", ok)
+            if ok:
+                out.update(ids)
     if cache is not None:
         cache.save()
     return out
@@ -322,9 +352,7 @@ def run(
             if settings.cluster_verify
             else None
         )
-        cluster_ids = _cluster_ids(
-            groups, verify=settings.cluster_verify, llm=llm or _make_llm(ctx), cache=cache
-        )
+        cluster_ids = _cluster_ids(groups, settings, llm=llm or _make_llm(ctx), cache=cache)
 
     # Optional: queue a Radarr metadata refresh for movies WITHOUT the saga tag, so
     # collections Radarr hasn't synced land by the NEXT run (fire-and-forget).

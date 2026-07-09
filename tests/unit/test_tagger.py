@@ -114,18 +114,19 @@ def test_cluster_verify_llm_can_reject_or_confirm(tmp_path: Path) -> None:
         {"id": 2, "title": "Hellboy II", "collection": None},
     ]
     cfg = {"radarr_tagger": {"cluster": True, "cluster_verify": True}}
+    # Batched verify: the LLM returns the group NUMBERS that are NOT sagas (fail-open).
     # Separate roots so the per-stem verification cache doesn't carry over.
     rejected = tagger.run(
         make_context(tmp_path / "a", integrations=cfg),
         client=_client(movies, [], []),
-        llm=lambda _p: "NO",
+        llm=lambda _p: "1",  # rejects group 1 (the only group)
     )
-    assert rejected.metrics["to_add"] == 0.0  # LLM says not a franchise → not tagged
+    assert rejected.metrics["to_add"] == 0.0
 
     confirmed = tagger.run(
         make_context(tmp_path / "b", integrations=cfg),
         client=_client(movies, [], []),
-        llm=lambda _p: "SI",
+        llm=lambda _p: "ninguno",  # nothing rejected → kept
     )
     assert confirmed.metrics["to_add"] == 2.0
 

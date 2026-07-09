@@ -89,9 +89,8 @@ def test_franchise_groups_finds_shared_stems() -> None:
     assert sorted(ids) == [1, 2]
 
 
-def test_cluster_prompt_and_affirmative_parsing() -> None:
-    prompt = tag_rules.build_cluster_prompt(["Hellboy", "Hellboy II"])
-    assert "Hellboy II" in prompt and "SI o NO" in prompt
-    assert tag_rules.is_affirmative("SÍ, son la misma saga")
-    assert tag_rules.is_affirmative("yes")
-    assert not tag_rules.is_affirmative("No, no lo son")
+def test_batch_prompt_and_reject_parsing() -> None:
+    prompt = tag_rules.build_cluster_batch_prompt([["Hellboy", "Hellboy II"], ["Saw", "Saw II"]])
+    assert "Grupo 1" in prompt and "Grupo 2" in prompt and "/no_think" in prompt
+    assert tag_rules.parse_rejected("no son: 2, 5", 3) == {2}  # 5 is out of range → dropped
+    assert tag_rules.parse_rejected("ninguno", 3) == set()

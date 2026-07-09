@@ -203,20 +203,26 @@ def franchise_groups(
     ]
 
 
-def build_cluster_prompt(titles: Sequence[str]) -> str:
-    """Prompt asking the local LLM to confirm a candidate group IS one franchise."""
-    listed = "\n".join(f"- {t}" for t in titles)
+def build_cluster_batch_prompt(groups: Sequence[Sequence[str]]) -> str:
+    """One prompt that verifies MANY candidate groups at once (far fewer LLM calls).
+
+    Asks which groups are NOT the same franchise (fail-open: anything not named is
+    kept). ``/no_think`` disables qwen3's slow reasoning for this simple task.
+    """
+    lines = [f"Grupo {i}: " + ", ".join(titles) for i, titles in enumerate(groups, 1)]
+    body = "\n".join(lines)
     return (
-        "¿Estas películas pertenecen a la MISMA saga/franquicia cinematográfica "
-        "(secuelas, precuelas o reinicios de la misma serie)? "
-        "Responde SOLO con una palabra: SI o NO.\n\n"
-        f"{listed}\n\nRespuesta:"
+        "Cada grupo son películas que comparten parte del título. Indica cuáles NO son "
+        "la misma saga/franquicia (secuelas, precuelas o reinicios de la misma serie).\n\n"
+        f"{body}\n\n"
+        "Responde SOLO con los números de los grupos que NO son la misma saga, separados "
+        "por comas (ej.: 2, 5). Si todos lo son, responde: ninguno\n/no_think"
     )
 
 
-def is_affirmative(text: str) -> bool:
-    """True if the LLM answer is a yes (tolerant of accents/casing/extra words)."""
-    return (text or "").strip().lower().startswith(("si", "sí", "yes", "true"))
+def parse_rejected(text: str, count: int) -> set[int]:
+    """The 1-based group numbers (1..count) the LLM flagged as NOT a franchise."""
+    return {n for n in (int(m) for m in re.findall(r"\d+", text or "")) if 1 <= n <= count}
 
 
 def desired_tags(movie: Mapping[str, object], rules: Sequence[Mapping[str, object]]) -> set[str]:
