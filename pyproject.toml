@@ -43,6 +43,8 @@ ignore = ["UP038"]
 # menu.py is an operator launcher: it only spawns trusted local commands
 # (python3/docker) with list args (no shell). Subprocess warnings expected.
 "menu.py" = ["S404", "S603", "S606", "S607"]
+# webui.py's self-update spawns a trusted local `git` (list args, no shell).
+"webui.py" = ["S603", "S607"]
 # bot.py is the same operator launcher over Telegram: spawns trusted local
 # commands (subprocess) and talks only to api.telegram.org (urllib S310).
 "bot.py" = ["S310", "S404", "S603", "S606", "S607"]

@@ -442,6 +442,17 @@ document.querySelectorAll('.fixai').forEach(b=>b.addEventListener('click',async(
       box.appendChild(document.createElement('br')); box.appendChild(ab);}
   }catch(e){box.className='aians'; box.textContent='error de red';} b.disabled=false;
 }));
+const upd=document.getElementById('upd');
+if(upd){upd.addEventListener('click',async()=>{
+  const t=await askToken(); if(!t)return;
+  const o=upd.innerHTML; upd.disabled=true; upd.innerHTML=SP+'actualizando…';
+  try{const r=await fetch('/api/update',{method:'POST',
+    headers:{'content-type':'application/json'},body:JSON.stringify({token:t})});
+    const j=await r.json(); upd.innerHTML=o; upd.disabled=false;
+    if(!j.ok && /token/.test(j.message||'')) localStorage.removeItem('izumi_tok');
+    toast(j.message||'?', j.ok?'ok':'err');
+  }catch(e){upd.innerHTML=o; upd.disabled=false; toast('error de red','err');}
+});}
 const asb=document.getElementById('asb');
 if(asb){asb.addEventListener('click',async()=>{
   const ask=document.getElementById('ask'), ans=document.getElementById('ans');
@@ -878,7 +889,8 @@ def render_html(
     sections.append(
         '<div class="chat"><input id=ask placeholder="Pregunta al asistente IA…">'
         "<button id=asb>Preguntar</button>"
-        '<a class="btn" href="/api/export">⬇ Exportar</a></div>'
+        '<a class="btn" href="/api/export">⬇ Exportar</a>'
+        '<button class="btn" id=upd title="git pull del repo">🔄 Actualizar</button></div>'
         '<div id=ans class="ai" style="display:none"></div>'
     )
     sections.append(_actions_panel())

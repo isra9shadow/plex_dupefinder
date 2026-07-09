@@ -36,6 +36,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable, Sequence
 from functools import partial
 from io import BytesIO
 
@@ -379,6 +380,52 @@ def _apply_command(command: str) -> tuple[bool, str]:  # pragma: no cover - need
     return outcome.ok, (outcome.output or outcome.error or f"rc={outcome.returncode}").strip()
 
 
+# --- self-update: pull the repo from the web, like the SSH menu does -----------
+# runner(args) -> (returncode, stdout) or None (git missing). Injected for tests.
+GitRunner = Callable[[Sequence[str]], "tuple[int, str] | None"]
+
+
+def _git_runner(repo: str) -> GitRunner:  # pragma: no cover - real subprocess
+    import subprocess
+
+    def run(args: Sequence[str]) -> tuple[int, str] | None:
+        try:
+            proc = subprocess.run(
+                ["git", "-c", f"safe.directory={repo}", "-C", repo, *args],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            return proc.returncode, proc.stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    return run
+
+
+def _git_head(run: GitRunner) -> str:
+    out = run(["rev-parse", "--short", "HEAD"])
+    return out[1].strip() if out is not None and out[0] == 0 and out[1].strip() else "?"
+
+
+def git_pull(repo: str, *, runner: GitRunner | None = None) -> tuple[bool, str]:
+    """git fetch + pull --ff-only in ``repo``; returns (ok, human message)."""
+    run = runner or _git_runner(repo)
+    fetched = run(["fetch", "--quiet", "origin"])
+    if fetched is None:
+        return False, "git no está disponible en el contenedor (reconstruye la imagen)"
+    if fetched[0] != 0:
+        return False, "sin conexión con el remoto (git fetch falló)"
+    before = _git_head(run)
+    pulled = run(["pull", "--ff-only"])
+    if pulled is None or pulled[0] != 0:
+        return False, "no se pudo actualizar (¿cambios locales sin commitear?)"
+    after = _git_head(run)
+    if before == after:
+        return True, f"ya al día ({after})"
+    return True, f"actualizado {before} → {after} — reinicia izumi-webui para aplicar el código"
+
+
 _NO_INDEX_HTML = (
     b"<!doctype html><meta charset=utf-8>"
     b"<style>body{font:15px system-ui;margin:3rem;color:#333}</style>"
@@ -447,7 +494,7 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
         if not self._auth_ok():
             return
         path = self.path.split("?", 1)[0]
-        if path not in ("/api/run", "/api/ask", "/api/apply"):
+        if path not in ("/api/run", "/api/ask", "/api/apply", "/api/update"):
             self._json(404, {"ok": False, "message": "not found"})
             return
         length = int(self.headers.get("Content-Length") or 0)
@@ -476,6 +523,12 @@ class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 if ok:
                     ok, detail = _ask_assistant(str(data.get("question", "")))
                     code, msg = (200 if ok else 400), detail
+            elif path == "/api/update":
+                ok, code, msg = check_token(token, expected_token=expected)
+                if ok:
+                    repo = os.path.dirname(os.path.realpath(__file__))
+                    ok, detail = git_pull(repo)
+                    code, msg = (200 if ok else 500), detail
             else:  # /api/apply
                 ok, code, msg = check_token(token, expected_token=expected)
                 if ok:

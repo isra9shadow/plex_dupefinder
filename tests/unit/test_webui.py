@@ -117,6 +117,37 @@ def test_jobs_snapshot_newest_first_and_capped() -> None:
     webui._JOBS.clear()
 
 
+def test_git_pull_reports_update_and_asks_for_restart() -> None:
+    heads = iter(["aaa1111", "bbb2222"])  # before, after
+
+    def runner(args: list[str]) -> tuple[int, str] | None:
+        if args[0] == "rev-parse":
+            return 0, next(heads) + "\n"
+        return 0, ""  # fetch / pull ok
+
+    ok, msg = webui.git_pull("/app", runner=runner)
+    assert ok and "aaa1111 → bbb2222" in msg and "reinicia izumi-webui" in msg
+
+
+def test_git_pull_up_to_date() -> None:
+    def runner(args: list[str]) -> tuple[int, str] | None:
+        return (0, "same999\n") if args[0] == "rev-parse" else (0, "")
+
+    ok, msg = webui.git_pull("/app", runner=runner)
+    assert ok and "ya al día" in msg
+
+
+def test_git_pull_offline_and_missing_git() -> None:
+    def offline(args: list[str]) -> tuple[int, str] | None:
+        return (1, "") if args[0] == "fetch" else (0, "")
+
+    ok, msg = webui.git_pull("/app", runner=offline)
+    assert not ok and "sin conexión" in msg
+
+    ok2, msg2 = webui.git_pull("/app", runner=lambda a: None)  # git binary missing
+    assert not ok2 and "git no está disponible" in msg2
+
+
 def test_api_allows_acting_modules() -> None:
     # Acting modules are whitelisted (they run dry-run by default; live only when the
     # client asks after confirming). The apply allow-list still gates raw commands.
