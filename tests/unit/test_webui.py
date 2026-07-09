@@ -117,6 +117,14 @@ def test_jobs_snapshot_newest_first_and_capped() -> None:
     webui._JOBS.clear()
 
 
+def test_render_report_shows_summary_plan_and_back_link() -> None:
+    out = webui.render_report("radarr_tagger", "# Radarr tagger\n> ERROR: x", '{"error": "x"}')
+    assert "radarr_tagger" in out
+    assert "Radarr tagger" in out and "ERROR: x" in out  # summary rendered (escaped)
+    assert "plan.json" in out and "&quot;error&quot;" in out  # plan shown, escaped
+    assert 'href="/"' in out  # back-to-panel link
+
+
 def test_git_pull_reports_update_and_asks_for_restart() -> None:
     heads = iter(["aaa1111", "bbb2222"])  # before, after
 

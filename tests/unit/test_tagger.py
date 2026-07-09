@@ -79,6 +79,14 @@ def test_live_removes_managed_tag_when_no_longer_matches(tmp_path: Path) -> None
     assert result.metrics["to_remove"] == 1.0
 
 
+def test_missing_radarr_config_writes_error_report(tmp_path: Path) -> None:
+    # No integrations.radarr → builds client from config → ConfigError → error report.
+    result = tagger.run(make_context(tmp_path))
+    assert not result.ok
+    summary = (tmp_path / "reports" / "radarr_tagger" / "summary.md").read_text(encoding="utf-8")
+    assert "ERROR" in summary and "integrations.radarr" in summary
+
+
 def test_never_touches_unmanaged_tags(tmp_path: Path) -> None:
     # A manual tag "keep" (no izumi: prefix) on a standalone movie must be left alone.
     tags = [{"id": 7, "label": "keep"}]

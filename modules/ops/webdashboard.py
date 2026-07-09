@@ -253,6 +253,7 @@ details.actions[open]>summary::before{content:"▾ "}
 @keyframes izslide{0%{margin-left:-45%}100%{margin-left:105%}}
 .job .jmeta{display:flex;justify-content:space-between;color:var(--muted);font-size:11.5px}
 .job .jmsg{margin-top:6px;color:var(--ink2);font-size:12px}
+.job .jrep{margin-top:6px} .job .jlink{color:var(--accent);font-size:12px;text-decoration:none}
 .job.min{padding:7px 12px} .job.min .jb{display:none}
 .job .jlog{margin:8px 0 0;max-height:180px;overflow:auto;background:var(--plane);
   border:1px solid var(--ring);border-radius:7px;padding:7px 9px;white-space:pre-wrap;
@@ -358,7 +359,8 @@ function addJob(id,action,dry){const el=document.createElement('div');
     +'<button class="jx" title="cerrar" style="display:none">✕</button></span></div>'
     +'<div class="jb"><div class="jbar ind"><i></i></div>'
     +'<div class="jmeta"><span class="jstep">en cola…</span><span class="jel"></span></div>'
-    +'<pre class="jlog"></pre><div class="jmsg"></div></div>';
+    +'<pre class="jlog"></pre><div class="jmsg"></div>'
+    +'<div class="jrep"></div></div>';
   el.querySelector('.jt').textContent=(dry?'▷ ':'▶ ')+action;
   const mb=el.querySelector('.jmin');
   mb.onclick=()=>{el.classList.toggle('min');
@@ -385,6 +387,10 @@ function renderJob(j){const o=JOBS[j.id];if(!o)return;const el=o.el;
   if(!running){bar.classList.remove('ind');fill.style.width='100%';
     el.classList.toggle('done',j.state==='done');el.classList.toggle('err',j.state==='error');
     pct.innerHTML=j.state==='done'?'✓':'✕';msg.textContent=j.message||'';
+    const rep=el.querySelector('.jrep');
+    if(rep && j.report && !rep.dataset.done){rep.dataset.done='1';
+      const a=document.createElement('a');a.href=j.report+'/';a.target='_blank';
+      a.textContent='ver informe →';a.className='jlink';rep.appendChild(a);}
     el.querySelector('.jx').style.display='';}
 }
 let jobsPoll=null;
@@ -915,7 +921,12 @@ def render_html(
             '<button data-act="health">▶ Ejecutar salud</button>'
             '<button data-act="webdashboard">↻ Refrescar panel</button></div>'
         )
-        sections.append(f"<h2>Detalle por módulo</h2>{_grouped_cards(cards, severity)}")
+        sections.append(
+            '<h2>Detalle por módulo</h2><p class="sub" style="margin:-4px 0 10px">'
+            "Pulsa <b>«ver informe →»</b> en cualquier tarjeta (o en un proceso al terminar) "
+            "para el informe completo. <b>⬇ Exportar</b> descarga todos juntos.</p>"
+            f"{_grouped_cards(cards, severity)}"
+        )
     if fixes:
         sections.append(_fixes_section(fixes))
     if not status and not cards:

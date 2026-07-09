@@ -146,6 +146,25 @@ def _write_report(ctx: RunContext, plan: _Plan, *, dry_run: bool, applied: int) 
     (out_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def _fail(ctx: RunContext, result: ModuleResult, category: str, msg: str) -> ModuleResult:
+    """Record + log the failure AND write an error report (so the widget/panel show why)."""
+    result.add_failure(FailureRecord(category=category, message=msg))
+    ctx.logger.warning("radarr_tagger failed", error=msg)
+    out_dir = ctx.config.reporting.dir / "radarr_tagger"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "plan.json").write_text(
+        json.dumps({"error": msg, "evaluated": 0}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (out_dir / "summary.md").write_text(
+        f"# Radarr tagger\n\n> ERROR ({category}): {msg}\n\n"
+        "Revisa `integrations.radarr` en config.json: necesita `url` y "
+        "`api_key_ref` (p. ej. `RADARR_API_KEY`), y que Radarr sea accesible.\n",
+        encoding="utf-8",
+    )
+    return result
+
+
 @register("radarr_tagger")
 def run(ctx: RunContext, *, client: RadarrClient | None = None) -> ModuleResult:
     """Compute izumi-managed Radarr tags from rules and apply the diff (LIVE only).
@@ -161,11 +180,9 @@ def run(ctx: RunContext, *, client: RadarrClient | None = None) -> ModuleResult:
         movies = rc.movies()
         tags = rc.tags()
     except (ConfigError, SecretError) as exc:
-        result.add_failure(FailureRecord(category="config", message=str(exc)))
-        return result
+        return _fail(ctx, result, "config", str(exc))
     except IntegrationError as exc:
-        result.add_failure(FailureRecord(category="integration", message=str(exc)))
-        return result
+        return _fail(ctx, result, "integration", str(exc))
 
     label_to_id: dict[str, int] = {}
     id_to_label: dict[int, str] = {}

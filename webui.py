@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hmac
+import html
 import http.server
 import json
 import logging
@@ -242,6 +243,7 @@ def _new_job(action: str, *, dry_run: bool) -> str:
             "current": "",
             "message": "",
             "ok": False,
+            "report": "",  # module name whose report page (/<module>/) can be opened
             "log": [],  # rolling tail of the run's log lines (live progress)
         }
     return jid
@@ -323,7 +325,8 @@ def _execute_job(jid: str) -> None:  # pragma: no cover - needs the platform
                 rc = _run_module(ctx, mod) or rc
         else:
             total = 1
-            _update_job(jid, total=1, step=1, current=action)
+            # A single module writes a report at /<action>/ — expose it to the widget.
+            _update_job(jid, total=1, step=1, current=action, report=action)
             rc = _run_module(ctx, action)
     finally:
         for base_logger in hooked:
@@ -436,16 +439,54 @@ _NO_INDEX_HTML = (
 )
 
 
+def _read_text(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def render_report(name: str, summary: str, plan_raw: str) -> str:
+    """A minimal, always-works HTML view of a module report (raw summary + plan.json).
+
+    Served for ``/<module>/`` when webdashboard hasn't (yet) generated the pretty page,
+    so a report is ALWAYS viewable right after a run — no more "where is the report?".
+    """
+    esc = html.escape
+    plan_block = f"<h3>plan.json</h3><pre>{esc(plan_raw)}</pre>" if plan_raw.strip() else ""
+    return (
+        "<!doctype html><html lang=es><head><meta charset=utf-8>"
+        '<meta name=viewport content="width=device-width,initial-scale=1">'
+        f"<title>izumi · {esc(name)}</title><style>:root{{color-scheme:light dark}}"
+        "body{font:14px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif;"
+        "margin:2rem auto;max-width:900px;padding:0 1rem}a{color:#2a78d6}"
+        "pre{white-space:pre-wrap;word-break:break-word;background:rgba(128,128,128,.14);"
+        "padding:12px 14px;border-radius:8px}</style></head><body>"
+        f'<p><a href="/">← volver al panel</a></p><h2>{esc(name)}</h2>'
+        f"<pre>{esc(summary)}</pre>{plan_block}</body></html>"
+    )
+
+
 class _DashboardHandler(http.server.SimpleHTTPRequestHandler):
     """Serves index.html at a directory; never dumps a raw file listing."""
 
     def list_directory(self, path: str):  # type: ignore[override]
-        # Reached only when a directory has no index.html — show a hint, not a dump.
+        # No index.html here. If it's a module report dir (has summary.md), render the
+        # full report on the fly; otherwise show the generic hint — never a file dump.
+        summ = os.path.join(path, "summary.md")
+        if os.path.isfile(summ):
+            name = os.path.basename(path.rstrip("/\\")) or "informe"
+            summary = _read_text(summ)
+            plan_raw = _read_text(os.path.join(path, "plan.json"))
+            body = render_report(name, summary, plan_raw).encode("utf-8")
+        else:
+            body = _NO_INDEX_HTML
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(_NO_INDEX_HTML)))
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        return BytesIO(_NO_INDEX_HTML)
+        return BytesIO(body)
 
     def _json(self, code: int, payload: dict[str, object]) -> None:
         body = json.dumps(payload).encode("utf-8")
