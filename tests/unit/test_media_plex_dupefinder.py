@@ -54,6 +54,15 @@ def test_records_failure_on_nonzero(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert result.failures[0].category == "integration"
 
 
+def test_writes_report_so_ver_informe_works(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(pdf.command, "run", _fake_run(0))
+    pdf.run(make_context(tmp_path))
+    summary = (tmp_path / "reports" / "plex_dupefinder" / "summary.md").read_text(encoding="utf-8")
+    assert "Plex DupeFinder" in summary and "output" in summary and "AUDIT" in summary
+
+
 def test_missing_script(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(pdf, "_SCRIPT", tmp_path / "does_not_exist.py")
     result = pdf.run(make_context(tmp_path))

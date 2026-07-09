@@ -15,10 +15,12 @@ path (invariant I1).
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 from adapters import command
+from adapters.command import CommandResult
 from core.registry import register
 from core.types import FailureRecord, ModuleResult, RunContext, SafetyMode
 
@@ -33,6 +35,37 @@ _MODE_TO_EXECUTION = {
     SafetyMode.AUDIT: "AUDIT",
     SafetyMode.LIVE: "QUARANTINE",
 }
+
+
+def _write_report(ctx: RunContext, execution_mode: str, cmd: CommandResult) -> None:
+    """Surface the legacy engine's outcome as a platform report so the panel/web
+    'ver informe' works (the engine's own JSON/activity.log stay untouched)."""
+    out_dir = ctx.config.reporting.dir / "plex_dupefinder"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "plan.json").write_text(
+        json.dumps(
+            {"execution_mode": execution_mode, "returncode": cmd.returncode, "ok": cmd.ok},
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    status = "OK ✅" if cmd.ok else "FALLO ❌"
+    tail = "\n".join((cmd.stdout or "").splitlines()[-40:]) or "(sin salida)"
+    lines = [
+        "# Plex DupeFinder",
+        "",
+        f"Modo motor: {execution_mode} · returncode: {cmd.returncode} · {status}",
+        "",
+        "## Salida del motor (últimas líneas)",
+        "```",
+        tail,
+        "```",
+        "",
+    ]
+    if not cmd.ok and cmd.stderr.strip():
+        lines += ["## Error", "```", "\n".join(cmd.stderr.splitlines()[-15:]), "```", ""]
+    (out_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 @register("plex_dupefinder")
@@ -61,4 +94,6 @@ def run(ctx: RunContext) -> ModuleResult:
         result.add_failure(
             FailureRecord(category="integration", message=f"plex_dupefinder exit {cmd.returncode}")
         )
+    _write_report(ctx, execution_mode, cmd)
+    result.metrics["returncode"] = float(cmd.returncode)
     return result
