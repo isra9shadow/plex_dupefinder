@@ -214,6 +214,10 @@ button:disabled{cursor:progress}
 .dlg button{padding:8px 14px;border:1px solid var(--ring);border-radius:8px;cursor:pointer;
   font:13px system-ui;background:var(--surface);color:var(--ink)}
 .dlg button.primary{background:var(--accent);color:#fff;border-color:transparent}
+.dlg.wide{max-width:760px}
+.rpt{max-height:60vh;overflow:auto;white-space:pre-wrap;word-break:break-word;
+  background:var(--plane);border:1px solid var(--ring);border-radius:8px;padding:10px 12px;
+  font:12px/1.5 ui-monospace,monospace;color:var(--ink2);margin:0 0 12px}
 /* acciones — lanzar módulos/pipelines desde el panel */
 details.actions{margin:0 0 10px;background:var(--surface);border:1px solid var(--ring);
   border-radius:10px;padding:4px 14px}
@@ -298,6 +302,20 @@ function askToken(){const s=localStorage.getItem('izumi_tok');if(s)return Promis
   d.querySelector('.go').onclick=ok;
   inp.addEventListener('keydown',e=>{if(e.key==='Enter')ok();});
   d.querySelector('.cancel').onclick=()=>fin(null);});}
+// --- informe en un modal (no salir del panel) ---
+function showReport(mod){return modal((d,fin)=>{
+  d.classList.add('wide');
+  d.innerHTML='<h4>Informe · '+mod+'</h4><pre class="rpt">cargando…</pre>'
+    +'<div class="row"><a class="btn" href="/'+mod+'/" target="_blank">abrir en pestaña ↗</a>'
+    +'<button class="primary go">Cerrar</button></div>';
+  d.querySelector('.go').onclick=()=>fin(true);
+  fetch('/'+encodeURIComponent(mod)+'/summary.md',{cache:'no-store'})
+    .then(r=>r.ok?r.text():Promise.reject())
+    .then(t=>{d.querySelector('.rpt').textContent=t||'(informe vacío)';})
+    .catch(()=>{d.querySelector('.rpt').textContent='(sin informe todavía — ejecuta el módulo)';});
+});}
+document.querySelectorAll('a.report').forEach(a=>a.addEventListener('click',e=>{
+  e.preventDefault(); showReport(a.dataset.mod);}));
 // --- filtro de tarjetas ---
 const q=document.getElementById('q');
 if(q){q.addEventListener('input',()=>{const v=q.value.toLowerCase();
@@ -389,8 +407,9 @@ function renderJob(j){const o=JOBS[j.id];if(!o)return;const el=o.el;
     pct.innerHTML=j.state==='done'?'✓':'✕';msg.textContent=j.message||'';
     const rep=el.querySelector('.jrep');
     if(rep && j.report && !rep.dataset.done){rep.dataset.done='1';
-      const a=document.createElement('a');a.href=j.report+'/';a.target='_blank';
-      a.textContent='ver informe →';a.className='jlink';rep.appendChild(a);}
+      const a=document.createElement('a');a.href='#';a.textContent='ver informe →';
+      a.className='jlink';a.onclick=(e)=>{e.preventDefault();showReport(j.report);};
+      rep.appendChild(a);}
     el.querySelector('.jx').style.display='';}
 }
 let jobsPoll=null;
@@ -709,7 +728,7 @@ def _one_card(module: str, summary: str, status: dict[str, str]) -> str:
         )
     return (
         f'<div class="card {cls}" data-name="{m.lower()}"><h3><span>{m}{badge}</span>'
-        f'<a href="{m}/">ver informe →</a></h3>'
+        f'<a href="{m}/" class="report" data-mod="{m}">ver informe →</a></h3>'
         f'<div class="b">{md_lite(summary)}</div>{fix}</div>'
     )
 

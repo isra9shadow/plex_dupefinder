@@ -107,7 +107,8 @@ def test_render_bad_card_has_ai_fix_button() -> None:
 def test_render_good_card_has_no_ai_fix_button() -> None:
     status = [{"module": "uptime", "ok": True, "failures": 0, "ts": "t"}]
     out = webdashboard.render_html(status, {}, [("uptime", "todo arriba")], generated="n")
-    assert 'data-mod="uptime"' not in out  # healthy cards don't offer a fix button
+    # healthy cards don't offer an AI FIX button (the report link also uses data-mod).
+    assert 'class="fixai" data-mod="uptime"' not in out
 
 
 def test_js_block_braces_and_parens_balanced() -> None:
