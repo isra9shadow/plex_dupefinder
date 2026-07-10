@@ -259,9 +259,12 @@ def extractor_command(*, dry, image=DOCKER_IMAGE):
     return _docker_run(*inner, image=image)
 
 
-def radarr_tagger_command(*, dry, image=DOCKER_IMAGE):
-    """Argv to run the Radarr tagger in a container (dry-run only SIMULATES)."""
-    inner = ["python", "run.py", "radarr_tagger"]
+def radarr_tagger_command(*, dry, fast=False, image=DOCKER_IMAGE):
+    """Argv to run the Radarr tagger in a container (dry-run only SIMULATES).
+
+    ``fast`` runs the no-LLM variant (radarr_tagger_fast) — instant, no Ollama."""
+    module = "radarr_tagger_fast" if fast else "radarr_tagger"
+    inner = ["python", "run.py", module]
     if dry:
         inner.append("--dry-run")
     return _docker_run(*inner, image=image)
@@ -633,11 +636,24 @@ def action_radarr_tagger_simulate():
 
 
 def action_radarr_tagger_apply():
-    if confirm("Esto ESCRIBIRÁ tags izumi:saga en Radarr (real, reversible). ¿Continuar?"):
+    if confirm("Esto ESCRIBIRÁ tags izumi-saga en Radarr (real, reversible). ¿Continuar?"):
         image = ensure_image()
         with temp_config(IZUMI_CFG, set_izumi_live):
             _run(radarr_tagger_command(dry=False, image=image))
         _show_report("radarr_tagger", "Etiquetado Radarr")
+
+
+def action_radarr_tagger_fast_simulate():
+    _run(radarr_tagger_command(dry=True, fast=True, image=ensure_image()))
+    _show_report("radarr_tagger_fast", "Etiquetado Radarr rápido (simulación)")
+
+
+def action_radarr_tagger_fast_apply():
+    if confirm("Etiquetar Radarr SIN IA (rápido, real, reversible). ¿Continuar?"):
+        image = ensure_image()
+        with temp_config(IZUMI_CFG, set_izumi_live):
+            _run(radarr_tagger_command(dry=False, fast=True, image=image))
+        _show_report("radarr_tagger_fast", "Etiquetado Radarr rápido")
 
 
 def _show_report(subdir, label):
@@ -1193,8 +1209,10 @@ def action_advanced_menu():
             ("Doctor de certificados TLS (caducidad)", action_certdoctor),
             ("Doctor de capacidad de disco (previsión)", action_capacitydoctor),
             ("Refrescar Plex tras tdarr (falsos duplicados)", action_plexrefresh),
-            ("Etiquetar Radarr — simular (izumi:saga)", action_radarr_tagger_simulate),
-            ("Etiquetar Radarr — aplicar (escribe tags)", action_radarr_tagger_apply),
+            ("Etiquetar Radarr IA — simular (izumi-saga)", action_radarr_tagger_simulate),
+            ("Etiquetar Radarr IA — aplicar (escribe tags)", action_radarr_tagger_apply),
+            ("Etiquetar Radarr rápido — simular (sin IA)", action_radarr_tagger_fast_simulate),
+            ("Etiquetar Radarr rápido — aplicar (sin IA)", action_radarr_tagger_fast_apply),
             ("Monitor de paridad (shadowcheck)", action_shadowcheck),
             ("Ver último plan del organizador", action_show_organizer_plan),
             ("Organizar — solo limpiar basura (no mueve)", action_organizer_cleanup_only),

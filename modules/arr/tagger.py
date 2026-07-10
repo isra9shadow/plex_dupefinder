@@ -125,17 +125,18 @@ def _cluster_ids(
     groups: list[tuple[str, list[int], list[str]]],
     settings: _Settings,
     *,
+    verify: bool,
     llm: LLM,
     cache: Cache | None,
 ) -> set[int]:
     """Movie ids to tag from clustering.
 
-    With ``cluster_verify``, the LLM confirms candidate groups in BATCHES (few calls),
-    cached by stem, fail-OPEN (keep on doubt/LLM-down) since over-tagging only over-
-    protects. ``cluster_verify_max`` caps NEW verifications per run so a huge library
-    never blocks on the GPU — the rest are kept now and verified on later runs.
+    With ``verify``, the LLM confirms candidate groups in BATCHES (few calls), cached
+    by stem, fail-OPEN (keep on doubt/LLM-down) since over-tagging only over-protects.
+    ``cluster_verify_max`` caps NEW verifications per run so a huge library never blocks
+    on the GPU — the rest are kept now and verified on later runs.
     """
-    if not settings.cluster_verify:
+    if not verify:
         return {mid for _stem, ids, _titles in groups for mid in ids}
 
     out: set[int] = set()
@@ -245,6 +246,7 @@ def _plan_changes(
 
 def _write_report(
     ctx: RunContext,
+    module: str,
     plan: _Plan,
     *,
     dry_run: bool,
@@ -252,7 +254,7 @@ def _write_report(
     apply_error: str = "",
     refreshed: int = 0,
 ) -> None:
-    out_dir = ctx.config.reporting.dir / "radarr_tagger"
+    out_dir = ctx.config.reporting.dir / module
     out_dir.mkdir(parents=True, exist_ok=True)
     add_counts = {lbl: len(ids) for lbl, ids in sorted(plan.add.items())}
     rem_counts = {lbl: len(ids) for lbl, ids in sorted(plan.remove.items())}
@@ -295,11 +297,13 @@ def _write_report(
     (out_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-def _fail(ctx: RunContext, result: ModuleResult, category: str, msg: str) -> ModuleResult:
+def _fail(
+    ctx: RunContext, module: str, result: ModuleResult, category: str, msg: str
+) -> ModuleResult:
     """Record + log the failure AND write an error report (so the widget/panel show why)."""
     result.add_failure(FailureRecord(category=category, message=msg))
     ctx.logger.warning("radarr_tagger failed", error=msg)
-    out_dir = ctx.config.reporting.dir / "radarr_tagger"
+    out_dir = ctx.config.reporting.dir / module
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "plan.json").write_text(
         json.dumps({"error": msg, "evaluated": 0}, indent=2, ensure_ascii=False),
@@ -314,26 +318,29 @@ def _fail(ctx: RunContext, result: ModuleResult, category: str, msg: str) -> Mod
     return result
 
 
-@register("radarr_tagger")
-def run(
-    ctx: RunContext, *, client: RadarrClient | None = None, llm: LLM | None = None
+def _run(
+    ctx: RunContext,
+    module: str,
+    *,
+    force_verify: bool | None,
+    client: RadarrClient | None = None,
+    llm: LLM | None = None,
 ) -> ModuleResult:
-    """Compute izumi-managed Radarr tags from rules + clustering and apply (LIVE only).
-
-    ``client``/``llm`` are injected in tests; production builds them from config.
-    """
-    result = ModuleResult(module="radarr_tagger", run_id=ctx.run_id, mode=ctx.mode)
+    """Core: tags from rules + clustering, apply (LIVE only). ``force_verify`` overrides
+    the config's cluster_verify (None = use config). ``client``/``llm`` injected in tests."""
+    result = ModuleResult(module=module, run_id=ctx.run_id, mode=ctx.mode)
     settings = _settings(ctx)
     dry_run = ctx.mode != SafetyMode.LIVE
+    verify = settings.cluster_verify if force_verify is None else force_verify
 
     try:
         rc = client or _radarr(ctx)
         movies = rc.movies()
         tags = rc.tags()
     except (ConfigError, SecretError) as exc:
-        return _fail(ctx, result, "config", str(exc))
+        return _fail(ctx, module, result, "config", str(exc))
     except IntegrationError as exc:
-        return _fail(ctx, result, "integration", str(exc))
+        return _fail(ctx, module, result, "integration", str(exc))
 
     label_to_id: dict[str, int] = {}
     id_to_label: dict[int, str] = {}
@@ -347,12 +354,10 @@ def run(
     cluster_ids: set[int] = set()
     if settings.cluster:
         groups = franchise_groups(movies, settings.cluster_min)
-        cache = (
-            Cache(ctx.config.reporting.dir / "cache" / "radarr_tagger.db")
-            if settings.cluster_verify
-            else None
+        cache = Cache(ctx.config.reporting.dir / "cache" / f"{module}.db") if verify else None
+        cluster_ids = _cluster_ids(
+            groups, settings, verify=verify, llm=llm or _make_llm(ctx), cache=cache
         )
-        cluster_ids = _cluster_ids(groups, settings, llm=llm or _make_llm(ctx), cache=cache)
 
     # Optional: queue a Radarr metadata refresh for movies WITHOUT the saga tag, so
     # collections Radarr hasn't synced land by the NEXT run (fire-and-forget).
@@ -399,7 +404,13 @@ def run(
             ctx.logger.warning("radarr_tagger apply failed", error=apply_error, applied=applied)
 
     _write_report(
-        ctx, plan, dry_run=dry_run, applied=applied, apply_error=apply_error, refreshed=refreshed
+        ctx,
+        module,
+        plan,
+        dry_run=dry_run,
+        applied=applied,
+        apply_error=apply_error,
+        refreshed=refreshed,
     )
     to_add = sum(len(v) for v in plan.add.values())
     to_remove = sum(len(v) for v in plan.remove.values())
@@ -419,3 +430,19 @@ def run(
     result.metrics["refreshed"] = float(refreshed)
     result.actions = applied
     return result
+
+
+@register("radarr_tagger")
+def run(
+    ctx: RunContext, *, client: RadarrClient | None = None, llm: LLM | None = None
+) -> ModuleResult:
+    """Tag from rules + clustering, LLM-verified if integrations.radarr_tagger.cluster_verify."""
+    return _run(ctx, "radarr_tagger", force_verify=None, client=client, llm=llm)
+
+
+@register("radarr_tagger_fast")
+def run_fast(
+    ctx: RunContext, *, client: RadarrClient | None = None, llm: LLM | None = None
+) -> ModuleResult:
+    """Same tagging but WITHOUT the LLM verification — instant (clustering kept as-is)."""
+    return _run(ctx, "radarr_tagger_fast", force_verify=False, client=client, llm=llm)

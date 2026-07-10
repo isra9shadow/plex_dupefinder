@@ -131,6 +131,22 @@ def test_cluster_verify_llm_can_reject_or_confirm(tmp_path: Path) -> None:
     assert confirmed.metrics["to_add"] == 2.0
 
 
+def test_fast_variant_skips_llm_even_if_verify_configured(tmp_path: Path) -> None:
+    movies = [
+        {"id": 1, "title": "Hellboy", "collection": None},
+        {"id": 2, "title": "Hellboy II", "collection": None},
+    ]
+    cfg = {"radarr_tagger": {"cluster": True, "cluster_verify": True}}
+    called: list[int] = []
+    result = tagger.run_fast(
+        make_context(tmp_path, integrations=cfg),
+        client=_client(movies, [], []),
+        llm=lambda _p: called.append(1) or "1",
+    )
+    assert result.metrics["to_add"] == 2.0  # both cluster members tagged
+    assert called == []  # LLM never consulted (fast = no verify)
+
+
 def test_refresh_untagged_dry_run_counts_targets(tmp_path: Path) -> None:
     movies = [
         {"id": 1, "collection": {"tmdbId": 1}, "tags": []},

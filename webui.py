@@ -91,6 +91,7 @@ _ACTING_ACTIONS = frozenset(
         "arr_orphans",
         "downloads_watchdog",
         "radarr_tagger",
+        "radarr_tagger_fast",
         "library",
     }
 )

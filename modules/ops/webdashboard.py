@@ -841,7 +841,8 @@ _ACTION_GROUPS: tuple[tuple[str, tuple[tuple[str, str, bool, str], ...]], ...] =
             ("extractor", "Descomprimir", True, "📦"),
             ("plex_dupefinder", "Quitar duplicados", True, "👯"),
             ("plexrefresh", "Refrescar Plex", True, "🎬"),
-            ("radarr_tagger", "Etiquetar Radarr", True, "🏷️"),
+            ("radarr_tagger", "Etiquetar Radarr (IA)", True, "🏷️"),
+            ("radarr_tagger_fast", "Etiquetar Radarr (rápido)", True, "⚡"),
         ),
     ),
 )
