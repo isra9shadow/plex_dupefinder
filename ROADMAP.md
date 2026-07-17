@@ -1,4 +1,4 @@
-# ROADMAP.md — `izumi` homelab platform
+# ROADMAP.md — `izumi-ops` homelab platform
 
 > Single roadmap across the **three** repos being consolidated into one:
 > `scripts` (legacy automation), `plex_dupefinder` (this repo → the platform
@@ -21,15 +21,15 @@ tooling (ruff/mypy-strict/pytest/coverage), CI, security gate. CI green, cov 98%
 
 ### 🔜 Phase A — Consolidation & correction (NEXT — unblocks correct code)
 Absorb `homelab-infra` and correct the platform config from the real inventory.
-- Rename repo → **`izumi`** (see ARCHITECTURE §Naming; `plex_dupefinder` → a module).
+- Rename repo → **`izumi-ops`** (see ARCHITECTURE §Naming; `plex_dupefinder` → a module).
 - Import `homelab-infra` into `infra/ inventory/ templates/ docs/` (no rewrites; move).
 - **Correct topology:** `config/disk_map.json` derived from `inventory/hardware.md`
   → array = disk1–5, cache pool = `/mnt/cache` (2× NVMe). **Remove disk6/disk7.**
-- **Correct paths:** runtime data under `/mnt/cache/appdata/izumi`; repos under
+- **Correct paths:** runtime data under `/mnt/cache/appdata/izumi-ops`; repos under
   `/mnt/cache/repos`; quarantine on the array near media.
 - `git init` legacy `scripts/` + rotate secrets (Sprint 0 carry-over).
 - DoD: one repo builds; inventory is the only place disks/shares/paths are defined;
-  `config.json` references inventory; no `/mnt/user/appdata` or disk6/7 anywhere.
+  `config.json` references inventory; no `/mnt/user/appdata`, `izumi` (only `izumi-ops`), or disk6/7 anywhere.
 
 ### Phase B — Sprint 1: Core Platform (FREEZE-2)
 `core/{config,logging,locks,safety,fs,notify,metrics,report,health,docker,
@@ -56,7 +56,7 @@ compose stacks in git, remove auto-generated `_default` networks (inventory
    + Unraid mover — the legacy SSD↔HDD/disk6-7 model is obsolete (data-move risk).
 2. **Inventory is the single source of truth** for disks/shares/services; the
    platform reads it, never hardcodes.
-3. **Naming**: `plex_dupefinder` no longer describes the scope → rename to `izumi`.
+3. **Naming**: `plex_dupefinder` no longer describes the scope → rename to `izumi-ops`.
 
 ## Milestones (calendar, solo operator, 6–8 agents)
 | Milestone | When |

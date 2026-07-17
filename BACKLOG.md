@@ -1,4 +1,4 @@
-# BACKLOG.md — `izumi` (execution-ready, simplified)
+# BACKLOG.md — `izumi-ops` (execution-ready, simplified)
 
 > One repo · one config · one logging · one reporting · one deploy · one
 > observability. Single operator → **simplicity over sophistication** (ADR-0008/0009).
@@ -18,9 +18,9 @@
 |---|---|---|---|---|---|---|---|
 | A-01 | Importar `homelab-infra` → `infra/ inventory/ templates/ docs/` | 🟡 | S | — | árbol presente, historia etiquetada | `infra/ inventory/ templates/ docs/` | SI |
 | A-02 | `config/disk_map.json` desde inventario (array disk1–5 + `/mnt/cache`; **sin disk6/7**) | 🔴 | S | A-01 | coincide con `inventory/hardware.md`; 0 disk6/7 | `config/disk_map.json` | SI |
-| A-03 | Corregir rutas (`/mnt/cache/appdata/izumi`, cuarentena en array) | 🟡 | XS | A-01 | 0 `/mnt/user/appdata` en defaults | `config/config_sample.json` | NO* |
+| A-03 | Corregir rutas (`/mnt/cache/appdata/izumi-ops`, cuarentena en array) | 🟡 | XS | A-01 | 0 `/mnt/user/appdata` en defaults | `config/config_sample.json` | NO* |
 | A-04 | ADRs 0005–0009 (single repo, inventory=SoT, rename, simplicity, housekeeping) | 🟢 | XS | — | 5 ADRs | `docs/adr/` | SI |
-| A-05 | Rename repo → `izumi` (remoto, run.sh, User Script) | 🟡 | XS | A-03,A-04 | redirige; automatización intacta | `deploy/`, `README.md` | NO |
+| A-05 | Rename repo → `izumi-ops` (remoto, run.sh, User Script) | 🟡 | XS | A-03,A-04 | redirige; automatización intacta | `deploy/`, `README.md` | NO |
 
 ### EPIC-B · Core Platform (base común) — **B-00 BLOQUEA todo el código**
 | ID | Objetivo | Riesgo | Esf | Deps | Criterios de aceptación | Archivos | Par |

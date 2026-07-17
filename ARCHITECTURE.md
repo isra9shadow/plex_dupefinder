@@ -1,4 +1,4 @@
-# ARCHITECTURE.md — `izumi` homelab platform
+# ARCHITECTURE.md — `izumi-ops` homelab platform
 
 > Target architecture for the **single** repository that consolidates three:
 > `scripts` (legacy automation), `plex_dupefinder` (this repo → platform spine),
@@ -66,7 +66,7 @@ The Python automation app stays at the repo root (unchanged from Sprint 0);
 `homelab-infra` is absorbed as sibling top-level directories.
 
 ```
-izumi/                       (= plex_dupefinder renamed)
+izumi-ops/                   (= plex_dupefinder renamed)
 │  ── governance (root) ──
 ├── README.md AGENTS.md CLAUDE.md AI_CONTEXT.md
 ├── ARCHITECTURE.md ROADMAP.md MIGRATION_PLAN.md BACKLOG.md SECURITY.md SCHEDULE.md
@@ -121,21 +121,22 @@ move-to-quarantine (never delete) → audited retention purge. Observability: on
 structured JSON log, one `reports/<run_id>.json`, Prometheus textfile metrics,
 `run.py health`, single Telegram notifier. Details in `docs/INVARIANTS.md` and ADRs.
 
-**Corrected runtime paths:** `/mnt/cache/appdata/izumi/{logs,reports,metrics}`,
+**Corrected runtime paths:** `/mnt/cache/appdata/izumi-ops/{logs,reports,metrics}`,
 repos under `/mnt/cache/repos`, quarantine on the array beside media
-(`/mnt/user/Temp/izumi_quarantine`).
+(`/mnt/user/Temp/izumi-ops_quarantine`).
 
 ---
 
 ## 6. Naming (rename DEFERRED — decision)
 
-The repo will eventually outgrow the name (candidate: **`izumi`**, the existing
-brand — izumiportal.com). **But we do NOT rename now.** `plex_dupefinder` is already
-deployed, tested, in CI, documented and in use. Rule: never rename + refactor +
-migrate at the same time. Sequence:
+The repo will eventually outgrow the name (chosen: **`izumi-ops`**, derived from the
+existing brand izumiportal.com, to distinguish from the broader ecosystem). This change
+is documentation-only for now. `plex_dupefinder` is already deployed, tested, in CI,
+documented and in use. Rule: never rename + refactor + migrate at the same time. Sequence:
 `plex_dupefinder → modular platform → homelab ops → rename LAST`.
-The dedupe logic becomes `modules/media/plex_dupefinder.py`; the repo keeps its
-current name until the platform is stable. See MIGRATION_PLAN §8.4 and ADR-0007.
+The dedupe logic becomes `modules/media/plex_dupefinder.py`; the repo will keep the
+current name until the platform is stable and the user is ready to rename on GitHub.
+See MIGRATION_PLAN §8.4 and ADR-0007.
 
 ---
 
