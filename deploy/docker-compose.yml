@@ -1,4 +1,4 @@
-# Always-on izumi services that are read-only / in-process (safe to containerise).
+# Always-on izumi-ops services that are read-only / in-process (safe to containerise).
 # The Telegram ops bot is NOT here — it runs on the host (see deploy/run-bot.sh)
 # because it spawns `docker run` with host paths.
 #
@@ -18,4 +18,4 @@ services:
     volumes:
       - "..:/app:ro"
       # Point this at your reporting.dir (config/config.json reporting.dir):
-      - "/mnt/cache/appdata/izumi/reports:/reports:ro"
+      - "/mnt/cache/appdata/izumi-ops/reports:/reports:ro"

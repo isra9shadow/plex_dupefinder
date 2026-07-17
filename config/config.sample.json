@@ -5,12 +5,12 @@
     "min_file_age_hours": 24,
     "stability_check_seconds": 2.0,
     "max_size_ratio": 5.0,
-    "quarantine_dir": "/mnt/user/Temp/izumi_quarantine",
+    "quarantine_dir": "/mnt/user/Temp/izumi-ops_quarantine",
     "retention_days": 7,
     "auto_purge": false
   },
-  "logging": { "level": "INFO", "dir": "/mnt/cache/appdata/izumi/logs", "rotate_mb": 10, "backups": 5 },
-  "reporting": { "dir": "/mnt/cache/appdata/izumi/reports", "metrics": true },
+  "logging": { "level": "INFO", "dir": "/mnt/cache/appdata/izumi-ops/logs", "rotate_mb": 10, "backups": 5 },
+  "reporting": { "dir": "/mnt/cache/appdata/izumi-ops/reports", "metrics": true },
   "notify": {
     "enabled": false,
     "level": "fail",
@@ -163,7 +163,7 @@
       "ai_summary": true
     },
     "notifypush": {
-      "title": "izumi · informe",
+      "title": "izumi-ops · informe",
       "max_section_chars": 1200,
       "discord_webhook_ref": "IZUMI_DISCORD_WEBHOOK",
       "sources": ["uptime", "diskwatch", "dbcheck", "status", "permsdoctor", "backupaudit", "netdoctor", "autoheal", "analyst", "logwatch"]
