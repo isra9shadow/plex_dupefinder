@@ -28,7 +28,7 @@ first functional release of the new architecture on the proven dedupe engine.
 - `Dockerfile.organizer` gains `unar` + static `docker` CLI; `menu.py` gains
   extract / analyst / logwatch options and an extract→dupes→organize full run.
 
-## [0.1.0] — unreleased (functional platform)
+## [0.1.0] — 2026-07-18 (functional platform)
 
 ### Added — platform core
 - Modular Python platform: `core/` (config, logging, locks, safety, fs/quarantine,
